@@ -18,34 +18,36 @@ OIAgent/
 
 | Tool | Version |
 |------|---------|
-| Node.js | 24.x |
-| npm | bundled with Node |
-| Python | 3.12 |
-| uv | latest (`pip install uv` or [uv docs](https://docs.astral.sh/uv/)) |
+| Docker Desktop | latest |
+| Docker Compose | v2 (bundled with Docker Desktop) |
+
+Node.js and Python do **not** need to be installed locally — all runtimes run inside containers.
 
 ## Local development
 
-### Frontend (`apps/web`)
-
 ```bash
-cd apps/web
-npm install
-npm run dev        # http://localhost:3000
+# 1. Copy env template and fill in your API keys
+cp .env.example .env
+
+# 2. Build and start all services
+docker compose up --build
+
+# Services:
+#   http://localhost:3000  — Next.js frontend
+#   http://localhost:8000  — FastAPI backend  (entry point added in Step 3)
+#   localhost:5432         — PostgreSQL + pgvector
 ```
 
-### Backend (`apps/api`)
+To start only a single service (e.g. during Step 1 verification):
 
 ```bash
-cd apps/api
-uv sync            # creates .venv and installs all deps
-uv run uvicorn main:app --reload   # http://localhost:8000
+docker compose up web          # frontend only
+docker compose build api       # build API image
 ```
-
-> **Note:** `main.py` will be added in Step 3 of the implementation roadmap.
 
 ## Environment variables
 
-Copy `.env.example` (added in Step 3) to `.env` in each app directory and fill in:
+Copy `.env.example` to `.env` at the repo root and fill in:
 
 | Variable | Description |
 |----------|-------------|

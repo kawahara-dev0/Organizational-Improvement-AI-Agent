@@ -1,46 +1,59 @@
 # Implementation Roadmap — Organizational Improvement AI Agent
 
-**Per-step verification:** Every step should end with a **short manual smoke check** (and automated tests where they already exist). Examples: run the dev server and load one screen; `curl` `/health`; run one migration against a local DB; hit a single API with a test JWT. Only **commit and push after** that check passes (or after filing a known limitation in the commit message). This keeps each pushed increment trustworthy without requiring full E2E on every step.
+**Per-step verification:** Every step should end with a **short manual smoke check** (and automated tests where they already exist). All services run inside **Docker / Docker Compose** — see the Docker section below for the canonical run commands per layer. This keeps each increment testable in an isolated, reproducible environment before it is committed.
 
-**Git & CI workflow:** After each step, **commit with a clear message and push** to the remote (feature branch or `main`, per your team policy). Treat every step as a mergeable increment. **Continuous Integration** must run **static analysis** on every push and pull request (and optionally on `main` after merge): e.g. Python with **Ruff** (and optionally **mypy** or **pyright**), frontend with **ESLint** plus **TypeScript** (`tsc --noEmit`). Fix or explicitly justify failures before merging; static-analysis green should be the default bar for each step once the relevant code exists.
+**Git & CI workflow:** After each step, stage and **commit** locally with a clear message. **Push to the remote only when explicitly instructed.** Treat every step as a self-contained, reviewable commit. **Continuous Integration** runs **static analysis** on every push and pull request (and optionally on `main` after merge): Python with **Ruff** (and optionally **mypy**), frontend with **ESLint** + **TypeScript** (`tsc --noEmit`). Static-analysis green is the default bar for each step once the relevant code exists.
+
+**Docker:** All runtime environments are containerized. The project provides:
+- `apps/api/Dockerfile` — Python 3.12 FastAPI image
+- `apps/web/Dockerfile` — Node 24 Next.js image
+- `docker-compose.yml` at repo root — orchestrates `api`, `web`, and (from Step 2) a local Supabase-compatible Postgres+pgvector instance
+- Each container is started with `docker compose up` for local dev; CI may run lint/type-check steps directly on the host (no Docker needed for static analysis only)
 
 ---
 
 ## Step 1 — Repository and project layout
 
-**Goal:** Establish a maintainable monorepo (or split repos) and shared conventions.
+**Goal:** Establish a maintainable monorepo and Docker-based local environment.
 
 **Deliverables:**
 
-- Root structure, e.g. `apps/web` (Next.js), `apps/api` (FastAPI), `packages/shared` (optional: types, OpenAPI client).
-- `.gitignore`, editor config, and **Python 3.12** toolchain definition (`pyproject.toml` or `requirements.txt` + optional `uv`/`poetry`).
-- Minimal `README` with local run pointers (can stay short until Step 2).
-- CI pipeline definition that runs the **static-analysis** jobs described in **Git & CI workflow** (start with no-op or minimal checks, then add Ruff/ESLint/tsc as code appears).
-- **Verify:** Package installs succeed; if a Next app exists, `pnpm dev` / `npm run dev` serves the starter page. Add API `/health` check from Step 3 onward.
+- Root structure: `apps/web` (Next.js), `apps/api` (FastAPI), docs.
+- `.gitignore`, **Python 3.12** toolchain definition (`pyproject.toml` + `.python-version`).
+- `apps/api/Dockerfile` — Python 3.12 slim image for FastAPI (app entry point added in Step 3).
+- `apps/web/Dockerfile` — Node 24 multi-stage image for Next.js.
+- `docker-compose.yml` at repo root — wires `api` and `web` services; `db` service placeholder added in Step 2.
+- Minimal `README` with `docker compose up` as the primary run instruction.
+- CI pipeline (`.github/workflows/ci.yml`) for static analysis (Ruff + ESLint + tsc).
+- **Verify:** `docker compose build` completes without errors; `docker compose up web` serves the Next.js starter page at `http://localhost:3000`.
 
 ---
 
 ## Step 2 — Supabase schema and local parity
 
-**Goal:** Materialize the data model from the design doc.
+**Goal:** Materialize the data model from the design doc with a local DB container.
 
 **Deliverables:**
 
-- SQL migrations (or Supabase migration files) for `knowledge_base` (with `vector` column dimension aligned to your embedding model, e.g. 768 for Gemini), `departments`, `consultations`.
-- RLS policies: **public/employee** vs **admin** access boundaries defined (even if auth is placeholder IDs at first).
-- Seed script for sample `departments` (optional).
+- Add `db` service to `docker-compose.yml`: `postgres:16` with the `pgvector` extension (using `pgvector/pgvector:pg16` image).
+- SQL migrations for `knowledge_base` (768-dim vector), `departments`, `consultations`; applied via `docker compose exec db psql ...` or a migration tool container.
+- RLS policies: **public/employee** vs **admin** access boundaries (placeholder until auth is wired in Step 10).
+- Seed script for sample `departments`.
+- **Verify:** `docker compose up db` starts cleanly; running the migrations populates all three tables.
 
 ---
 
 ## Step 3 — FastAPI foundation
 
-**Goal:** Runnable API with configuration, logging, and health checks.
+**Goal:** Runnable API container with configuration, logging, and health checks.
 
 **Deliverables:**
 
-- FastAPI app, `/health`, structured settings via environment variables (Supabase URL/keys, model API keys, **feature flag for Claude routing**).
-- Database client (Supabase REST or `asyncpg`/SQLAlchemy — pick one pattern and stick to it).
-- Dockerfile for API (optional but recommended early).
+- FastAPI app entry point (`main.py`), `/health` endpoint, structured settings via `pydantic-settings` (reads from environment / `.env` file mounted by Compose).
+- Database client (`asyncpg` or Supabase Python SDK — pick one pattern and stick to it).
+- `.env.example` at repo root documenting all required variables (Supabase URL/keys, model API keys, `ENABLE_CLAUDE_ROUTING`).
+- `apps/api/Dockerfile` finalized (was scaffolded in Step 1).
+- **Verify:** `docker compose up api` starts; `curl http://localhost:8000/health` returns `{"status":"ok"}`.
 
 ---
 
@@ -52,8 +65,9 @@
 
 - Interface: `invoke_chat`, `invoke_rag`, `generate_proposal`, etc., backed by LangChain/LangGraph where appropriate.
 - **Default:** all paths use Gemini 2.0 Flash-Lite.
-- **Conditional Claude:** when `severity >= 4`, when generating formal `proposal` after submit, or Top-down analytical mode — **gated by env var** (e.g. `ENABLE_CLAUDE_ROUTING=true`) so dev/test stay on Gemini only.
+- **Conditional Claude:** when `severity >= 4`, when generating formal `proposal` after submit, or Top-down analytical mode — **gated by env var** (`ENABLE_CLAUDE_ROUTING=true`) so dev/test stay on Gemini only.
 - Unit tests for routing decisions (mock LLMs).
+- **Verify:** `docker compose run --rm api pytest tests/test_router.py` passes.
 
 ---
 
@@ -66,6 +80,7 @@
 - File parsers (PDF/Excel/DOCX) and chunking strategy (with metadata: source file, page).
 - Embedding pipeline using the same model as query-time RAG.
 - Admin-only API routes: upload, list chunks, update, delete.
+- **Verify:** Upload a sample PDF via `curl` against the running `api` container; confirm the chunk and vector appear in the `db` container.
 
 ---
 
@@ -78,6 +93,7 @@
 - Vector search over `knowledge_base` with metadata filters if needed.
 - Prompt templates for “Personal Advice” vs “Structural Perspective” sections.
 - Integration tests against a small fixture index.
+- **Verify:** `docker compose run --rm api pytest tests/test_rag.py` passes against the local `db` container.
 
 ---
 
@@ -90,6 +106,7 @@
 - Create/update `consultations` row; store transcript or message history (design prefers updating `department`, `category`, `severity` as conversation evolves — define storage: JSONB column or separate `messages` table).
 - After each assistant turn (or on a schedule): call **Gemini** metadata extractor to refresh `department`, `category`, `severity` (0–5).
 - `feedback` endpoint for Like/Dislike.
+- **Verify:** `docker compose up` and send a test chat message via `curl`; confirm `consultations` row is created in the `db` container with AI-extracted metadata.
 
 ---
 
@@ -102,6 +119,7 @@
 - Department dropdown (from `departments` API).
 - Chat UI, feedback buttons, “Submit to Manager” entry point.
 - Env-based API base URL; basic error/loading states.
+- **Verify:** `docker compose up` and open `http://localhost:3000`; department dropdown populates from the API container.
 
 ---
 
@@ -114,6 +132,7 @@
 - Server action or API: generate draft `summary` + `proposal` with PII redaction and tone reframing (router uses Claude when flag on; else Gemini).
 - UI: editable draft in chat; optional name/email.
 - **Single transaction** on confirm: set `summary`, `proposal`, `user_name`, `user_email`, `is_submitted=true`, `admin_status='New'`.
+- **Verify:** Submit a test consultation end-to-end via the browser; confirm the `consultations` row in the DB has all fields populated atomically.
 
 ---
 
@@ -125,6 +144,7 @@
 
 - Admin login (Supabase Auth or your chosen IdP) and role check.
 - Dashboard routes: Knowledge Base, Departments, Trends, Proposals.
+- **Verify:** Admin login succeeds in browser; non-admin routes are blocked.
 
 ---
 
@@ -136,6 +156,7 @@
 
 - CRUD for departments.
 - Upload/list/edit/delete knowledge chunks (calls Step 5 APIs).
+- **Verify:** Upload and delete a document from the admin UI; confirm DB state.
 
 ---
 
@@ -161,7 +182,9 @@
 - Rate limiting, input size limits, and secrets handling strict in production.
 - Enable **Claude routing** only in production via env; document toggles.
 - Logging/tracing (request IDs), basic monitoring hooks.
-- Deployment manifests (e.g. Vercel + container host for API, or full container stack).
+- Production Docker image optimizations (multi-stage builds, non-root user, minimal base images).
+- Deployment manifests (e.g. Vercel for `web` + container registry + host for `api`, or full container stack).
+- **Verify:** Production image builds cleanly; `docker compose -f docker-compose.prod.yml up` runs all services without errors.
 
 ---
 
