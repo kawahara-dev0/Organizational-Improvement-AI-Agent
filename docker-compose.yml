@@ -17,6 +17,56 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── DB migrations (run once: docker compose run --rm migrate) ───────────
+  migrate:
+    image: pgvector/pgvector:pg16
+    restart: "no"
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-oiagent}
+      PGUSER: ${POSTGRES_USER:-oiagent}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-oiagent}
+    volumes:
+      - ./db/migrations:/migrations:ro
+    entrypoint: >
+      sh -c "
+        until pg_isready -h db; do sleep 1; done;
+        for f in /migrations/*.sql; do
+          echo \"Applying $$f ...\";
+          psql -f $$f;
+        done;
+        echo 'Migrations complete.'
+      "
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ── DB seed (run once: docker compose run --rm seed) ─────────────────────
+  seed:
+    image: pgvector/pgvector:pg16
+    restart: "no"
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-oiagent}
+      PGUSER: ${POSTGRES_USER:-oiagent}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-oiagent}
+    volumes:
+      - ./db/seeds:/seeds:ro
+    entrypoint: >
+      sh -c "
+        until pg_isready -h db; do sleep 1; done;
+        for f in /seeds/*.sql; do
+          echo \"Applying $$f ...\";
+          psql -f $$f;
+        done;
+        echo 'Seed complete.'
+      "
+    depends_on:
+      db:
+        condition: service_healthy
+
   # ── FastAPI backend (entry point added in Step 3) ─────────────────────────
   api:
     build:
