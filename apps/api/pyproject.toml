@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    "asyncpg>=0.29",
     "supabase>=2.4",
     "langchain>=0.2",
     "langchain-google-genai>=1.0",
@@ -34,11 +35,17 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "B008",  # FastAPI Depends() used as default argument — intentional pattern
+]
 
 [tool.mypy]
 python_version = "3.12"
 strict = false
 ignore_missing_imports = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
 
 [build-system]
 requires = ["hatchling"]

@@ -67,25 +67,23 @@ services:
       db:
         condition: service_healthy
 
-  # ── FastAPI backend (entry point added in Step 3) ─────────────────────────
+  # ── FastAPI backend ───────────────────────────────────────────────────────
   api:
     build:
       context: ./apps/api
       dockerfile: Dockerfile
+      target: dev
     restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-oiagent}:${POSTGRES_PASSWORD:-oiagent}@db:5432/${POSTGRES_DB:-oiagent}
     ports:
       - "8000:8000"
+    volumes:
+      - ./apps/api:/app
     depends_on:
       db:
         condition: service_healthy
-    develop:
-      watch:
-        - action: sync
-          path: ./apps/api
-          target: /app
 
   # ── Next.js frontend ──────────────────────────────────────────────────────
   web:
