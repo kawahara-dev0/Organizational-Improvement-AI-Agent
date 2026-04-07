@@ -34,3 +34,6 @@ Thumbs.db
 *.pem
 *.key
 secrets/
+
+# ---- Local samples / test fixtures ----
+sample/
