@@ -1,13 +1,15 @@
 """Admin-only management endpoints.
 
 Endpoints:
-  GET  /admin/proposals    — list all submitted consultations
-  GET  /admin/trends       — category × department aggregation
-  POST /admin/departments  — add a new department
+  GET    /admin/proposals          — list all submitted consultations
+  GET    /admin/trends             — category × department aggregation
+  POST   /admin/departments        — add a new department
+  PUT    /admin/departments/{id}   — rename a department
+  DELETE /admin/departments/{id}   — delete a department
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.deps import require_admin
@@ -87,3 +89,38 @@ async def create_department(
         body.name,
     )
     return dict(row)
+
+
+class DepartmentUpdate(BaseModel):
+    name: str
+
+
+@router.put("/departments/{department_id}")
+async def update_department(
+    department_id: str,
+    body: DepartmentUpdate,
+    conn=Depends(get_conn),
+) -> dict:
+    """Rename a department."""
+    row = await conn.fetchrow(
+        "UPDATE departments SET name = $1 WHERE id = $2::uuid RETURNING id::text, name",
+        body.name,
+        department_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Department not found.")
+    return dict(row)
+
+
+@router.delete("/departments/{department_id}", status_code=204)
+async def delete_department(
+    department_id: str,
+    conn=Depends(get_conn),
+) -> None:
+    """Delete a department (does not cascade to consultations)."""
+    result = await conn.execute(
+        "DELETE FROM departments WHERE id = $1::uuid",
+        department_id,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Department not found.")

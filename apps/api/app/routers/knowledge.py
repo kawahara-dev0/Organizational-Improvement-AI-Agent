@@ -1,12 +1,16 @@
-"""Admin-only knowledge base API routes.
+"""Admin-only knowledge base API routes (document-centric).
+
+Documents are the primary management unit.  Chunks are derived data that
+the admin can *view* but never edit directly — to change content, upload a
+new version of the source file.
 
 Endpoints:
-  POST   /knowledge/upload         — parse, embed, upsert a document
-  GET    /knowledge/chunks          — list chunks (filterable by source_file)
-  GET    /knowledge/chunks/{id}     — get a single chunk
-  PUT    /knowledge/chunks/{id}     — update chunk content (re-embeds)
-  DELETE /knowledge/chunks/{id}     — delete a single chunk
-  DELETE /knowledge/source          — delete all chunks for a source file
+  GET    /knowledge/documents              — list all documents
+  POST   /knowledge/documents              — create document + upload first version
+  GET    /knowledge/documents/{id}         — document detail (versions + chunks)
+  PATCH  /knowledge/documents/{id}         — update title / category
+  POST   /knowledge/documents/{id}/upload  — upload a new version
+  DELETE /knowledge/documents/{id}         — delete document (cascades to chunks)
 """
 
 from __future__ import annotations
@@ -14,14 +18,18 @@ from __future__ import annotations
 import logging
 
 from asyncpg import Connection
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from google.genai.errors import ClientError
 from pydantic import BaseModel
 
 from app.auth.deps import require_admin
 from app.db.session import get_conn
-from app.kb import embedder, parser, repository
+from app.kb import doc_repository as doc_repo
+from app.kb import embedder, parser
+from app.kb import repository as chunk_repo
 
 logger = logging.getLogger(__name__)
+
 router = APIRouter(
     prefix="/knowledge",
     tags=["knowledge"],
@@ -42,111 +50,214 @@ def _check_extension(filename: str) -> str:
     return ext
 
 
-# ── Upload ────────────────────────────────────────────────────────────────────
-
-
-class UploadResponse(BaseModel):
-    source_file: str
-    chunks_created: int
-    chunk_ids: list[str]
-
-
-@router.post("/upload", response_model=UploadResponse)
-async def upload_document(
-    file: UploadFile = File(...),
-    category: str = Form(default=""),
-    conn: Connection = Depends(get_conn),
-) -> UploadResponse:
-    """Parse a document, embed its chunks, and upsert into knowledge_base."""
-    _check_extension(file.filename or "")
-
-    data = await file.read()
-    if len(data) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 20 MB)")
-
-    filename = file.filename or "unknown"
-
-    pages = parser.parse(data, filename)
+async def _parse_embed_store(
+    file_data: bytes,
+    filename: str,
+    category: str,
+    conn: Connection,
+    document_id: str,
+    version_id: str,
+) -> int:
+    """Parse → embed → store chunks. Returns chunk count."""
+    pages = parser.parse(file_data, filename)
     if not pages:
-        raise HTTPException(status_code=422, detail="No text content found in file")
+        raise HTTPException(status_code=422, detail="No text content found in file.")
 
     chunks = parser.chunk_pages(pages, source_file=filename, category=category)
     vectors = await embedder.embed_chunks(chunks)
-    ids = await repository.upsert_chunks(conn, chunks, vectors)
-
-    logger.info("Uploaded %s → %d chunks", filename, len(ids))
-    return UploadResponse(source_file=filename, chunks_created=len(ids), chunk_ids=ids)
-
-
-# ── List / Get ────────────────────────────────────────────────────────────────
-
-
-@router.get("/chunks")
-async def list_chunks(
-    source_file: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    conn: Connection = Depends(get_conn),
-) -> list[dict]:
-    return await repository.list_chunks(conn, source_file=source_file, limit=limit, offset=offset)
+    ids = await chunk_repo.upsert_chunks(
+        conn, chunks, vectors,
+        document_id=document_id,
+        version_id=version_id,
+    )
+    return len(ids)
 
 
-@router.get("/chunks/{chunk_id}")
-async def get_chunk(
-    chunk_id: str,
-    conn: Connection = Depends(get_conn),
-) -> dict:
-    chunk = await repository.get_chunk(conn, chunk_id)
-    if not chunk:
-        raise HTTPException(status_code=404, detail="Chunk not found")
-    return chunk
+# ── List ──────────────────────────────────────────────────────────────────────
 
 
-# ── Update ────────────────────────────────────────────────────────────────────
+@router.get("/documents")
+async def list_documents(conn: Connection = Depends(get_conn)) -> list[dict]:
+    """Return all documents with active version summary."""
+    return await doc_repo.list_documents(conn)
 
 
-class UpdateChunkRequest(BaseModel):
-    content: str
+# ── Create (document + first version) ────────────────────────────────────────
 
 
-@router.put("/chunks/{chunk_id}")
-async def update_chunk(
-    chunk_id: str,
-    body: UpdateChunkRequest,
+@router.post("/documents", status_code=201)
+async def create_document(
+    title: str = Form(...),
+    category: str = Form(default=""),
+    file: UploadFile = File(...),
     conn: Connection = Depends(get_conn),
 ) -> dict:
-    """Update chunk content and re-embed."""
-    dummy_chunk = parser.Chunk(content=body.content)
-    vectors = await embedder.embed_chunks([dummy_chunk])
-    updated = await repository.update_chunk_content(conn, chunk_id, body.content, vectors[0])
+    """Create a new document and upload its first version."""
+    _check_extension(file.filename or "")
+    file_data = await file.read()
+    if len(file_data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 20 MB).")
+
+    filename = file.filename or "unknown"
+
+    document_id = await doc_repo.create_document(conn, title=title, category=category)
+    version_id, version_no = await doc_repo.create_version(
+        conn, document_id=document_id, source_file=filename
+    )
+
+    try:
+        chunk_count = await _parse_embed_store(
+            file_data, filename, category, conn, document_id, version_id
+        )
+    except ClientError as exc:
+        # Roll back provisional document/version rows.
+        await doc_repo.archive_document(conn, document_id)
+        if exc.code == 429:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Embedding quota limit reached. Please wait about 60 seconds "
+                    "and try uploading again."
+                ),
+            ) from exc
+        raise
+    except Exception:
+        await doc_repo.archive_document(conn, document_id)
+        raise
+
+    await doc_repo.finalize_version(conn, document_id, version_id, chunk_count)
+
+    logger.info(
+        "Created document %r (id=%s) v%d — %d chunks",
+        title, document_id, version_no, chunk_count,
+    )
+    return {
+        "document_id": document_id,
+        "version_id": version_id,
+        "version_no": version_no,
+        "chunks_created": chunk_count,
+    }
+
+
+# ── Detail ────────────────────────────────────────────────────────────────────
+
+
+@router.get("/documents/{document_id}")
+async def get_document(
+    document_id: str,
+    conn: Connection = Depends(get_conn),
+) -> dict:
+    """Return document metadata, version history, and active-version chunks."""
+    doc = await doc_repo.get_document(conn, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    # Attach chunks for the currently active version (view only)
+    active_version_id = next(
+        (v["id"] for v in doc.get("versions", []) if v["is_active"]),
+        None,
+    )
+    chunks: list[dict] = []
+    if active_version_id:
+        chunks = await doc_repo.list_chunks_for_version(conn, active_version_id)
+
+    return {**doc, "chunks": chunks}
+
+
+# ── Update metadata ───────────────────────────────────────────────────────────
+
+
+class DocumentUpdate(BaseModel):
+    title: str
+    category: str = ""
+
+
+@router.patch("/documents/{document_id}")
+async def update_document(
+    document_id: str,
+    body: DocumentUpdate,
+    conn: Connection = Depends(get_conn),
+) -> dict:
+    """Update document title and/or category (does not affect chunks)."""
+    updated = await doc_repo.update_document_meta(
+        conn, document_id, title=body.title, category=body.category
+    )
     if not updated:
-        raise HTTPException(status_code=404, detail="Chunk not found")
-    return {"id": chunk_id, "content": body.content, "updated": True}
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return {"document_id": document_id, "title": body.title, "category": body.category}
+
+
+# ── Upload new version ────────────────────────────────────────────────────────
+
+
+@router.post("/documents/{document_id}/upload", status_code=201)
+async def upload_new_version(
+    document_id: str,
+    file: UploadFile = File(...),
+    conn: Connection = Depends(get_conn),
+) -> dict:
+    """Upload a new version of an existing document.
+
+    The new version becomes active immediately; previous version chunks are
+    retained in DB but excluded from RAG retrieval (is_active = FALSE).
+    """
+    doc = await doc_repo.get_document(conn, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    _check_extension(file.filename or "")
+    file_data = await file.read()
+    if len(file_data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 20 MB).")
+
+    filename = file.filename or "unknown"
+    category = doc.get("category", "")
+
+    version_id, version_no = await doc_repo.create_version(
+        conn, document_id=document_id, source_file=filename
+    )
+
+    try:
+        chunk_count = await _parse_embed_store(
+            file_data, filename, category, conn, document_id, version_id
+        )
+    except ClientError as exc:
+        await doc_repo.delete_version(conn, version_id)
+        if exc.code == 429:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Embedding quota limit reached. Please wait about 60 seconds "
+                    "and try uploading again."
+                ),
+            ) from exc
+        raise
+    except Exception:
+        await doc_repo.delete_version(conn, version_id)
+        raise
+
+    await doc_repo.finalize_version(conn, document_id, version_id, chunk_count)
+
+    logger.info(
+        "New version v%d for document %s — %d chunks", version_no, document_id, chunk_count
+    )
+    return {
+        "document_id": document_id,
+        "version_id": version_id,
+        "version_no": version_no,
+        "chunks_created": chunk_count,
+    }
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 
 
-@router.delete("/chunks/{chunk_id}")
-async def delete_chunk(
-    chunk_id: str,
+@router.delete("/documents/{document_id}", status_code=204)
+async def delete_document(
+    document_id: str,
     conn: Connection = Depends(get_conn),
-) -> dict:
-    deleted = await repository.delete_chunk(conn, chunk_id)
+) -> None:
+    """Delete a document and all its versions and chunks (irreversible)."""
+    deleted = await doc_repo.archive_document(conn, document_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Chunk not found")
-    return {"id": chunk_id, "deleted": True}
-
-
-class DeleteSourceRequest(BaseModel):
-    source_file: str
-
-
-@router.delete("/source")
-async def delete_source(
-    body: DeleteSourceRequest,
-    conn: Connection = Depends(get_conn),
-) -> dict:
-    """Delete all chunks for a given source file."""
-    count = await repository.delete_by_source(conn, body.source_file)
-    return {"source_file": body.source_file, "deleted_chunks": count}
+        raise HTTPException(status_code=404, detail="Document not found.")

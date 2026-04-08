@@ -16,21 +16,32 @@ async def upsert_chunks(
     conn: Connection,
     chunks: list[Chunk],
     vectors: list[list[float]],
+    document_id: str | None = None,
+    version_id: str | None = None,
 ) -> list[str]:
-    """Insert chunk rows and return the list of new UUIDs."""
+    """Insert chunk rows and return the list of new UUIDs.
+
+    If document_id / version_id are provided (new document-centric upload),
+    they are stored directly as FK columns. The source_file / category fields
+    in metadata are kept for backward-compatibility with the RAG retriever.
+    """
     ids: list[str] = []
     for chunk, vector in zip(chunks, vectors, strict=True):
         row_id = str(uuid.uuid4())
         vector_str = "[" + ",".join(str(v) for v in vector) + "]"
         await conn.execute(
             """
-            INSERT INTO knowledge_base (id, content, embedding, metadata)
-            VALUES ($1, $2, $3::vector, $4::jsonb)
+            INSERT INTO knowledge_base
+                (id, content, embedding, metadata, document_id, version_id)
+            VALUES ($1, $2, $3::vector, $4::jsonb,
+                    $5::uuid, $6::uuid)
             """,
             row_id,
             chunk.content,
             vector_str,
             json.dumps(chunk.metadata),
+            document_id,
+            version_id,
         )
         ids.append(row_id)
     return ids

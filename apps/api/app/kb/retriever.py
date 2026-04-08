@@ -35,29 +35,35 @@ async def retrieve(
     vector = await embed_query(query)
     vector_str = "[" + ",".join(str(v) for v in vector) + "]"
 
-    # Build optional WHERE clauses
-    conditions: list[str] = []
+    # Build WHERE clauses.
+    # Always restrict to chunks from active document versions (if version data
+    # is present). Legacy chunks (version_id IS NULL) are included as well so
+    # that data uploaded before Migration 003 keeps working.
+    conditions: list[str] = [
+        "(kb.version_id IS NULL OR v.is_active = TRUE)"
+    ]
     params: list = [vector_str, top_k]
 
     if source_file is not None:
         params.append(source_file)
-        conditions.append(f"metadata->>'source_file' = ${len(params)}")
+        conditions.append(f"kb.metadata->>'source_file' = ${len(params)}")
 
     if category is not None:
         params.append(category)
-        conditions.append(f"metadata->>'category' = ${len(params)}")
+        conditions.append(f"kb.metadata->>'category' = ${len(params)}")
 
-    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    where_clause = "WHERE " + " AND ".join(conditions)
 
     sql = f"""
         SELECT
-            id,
-            content,
-            metadata,
-            1 - (embedding <=> $1::vector) AS similarity
-        FROM knowledge_base
+            kb.id,
+            kb.content,
+            kb.metadata,
+            1 - (kb.embedding <=> $1::vector) AS similarity
+        FROM knowledge_base kb
+        LEFT JOIN kb_document_versions v ON v.id = kb.version_id
         {where_clause}
-        ORDER BY embedding <=> $1::vector
+        ORDER BY kb.embedding <=> $1::vector
         LIMIT $2
     """
 
