@@ -193,3 +193,73 @@ async def test_post_consultations_saves_department(db_conn) -> None:
     row = await db_conn.fetchrow("SELECT department FROM consultations WHERE id = $1", cid)
     assert row is not None
     assert row["department"] == "Human Resources"
+
+
+# ── proposal draft split (plain headings, no markdown) ───────────────────────────
+
+
+def test_derive_summary_and_proposal_plain_section_headings() -> None:
+    from app.routers.consultations import _derive_summary_and_proposal
+
+    raw = """Executive Summary
+
+First paragraph only.
+
+Root Cause Analysis
+Point one.
+Point two.
+
+Proposed Actions
+1. Do A
+2. Do B
+"""
+    summary, proposal = _derive_summary_and_proposal(raw)
+    assert summary.strip() == "First paragraph only."
+    assert "Executive Summary" not in proposal
+    assert "Root Cause Analysis" in proposal
+    assert "Proposed Actions" in proposal
+    assert "First paragraph only." not in proposal
+
+
+def test_derive_summary_and_proposal_markdown_headings() -> None:
+    from app.routers.consultations import _derive_summary_and_proposal
+
+    raw = """### Executive Summary
+
+One para.
+
+### Root Cause Analysis
+
+Details here.
+
+### Proposed Actions
+
+1. X
+"""
+    summary, proposal = _derive_summary_and_proposal(raw)
+    assert "One para." in summary
+    assert "One para." not in proposal
+    assert "Root Cause Analysis" in proposal
+    assert "Details here." in proposal
+
+
+def test_derive_summary_and_proposal_japanese_fixed_headings() -> None:
+    from app.routers.consultations import _derive_summary_and_proposal
+
+    raw = """### 概要
+
+要約は1段落。
+
+### 原因分析
+
+原因の詳細。
+
+### 提案事項
+
+1. 改善A
+"""
+    summary, proposal = _derive_summary_and_proposal(raw)
+    assert "要約は1段落。" in summary
+    assert "概要" not in proposal
+    assert "原因分析" in proposal
+    assert "提案事項" in proposal

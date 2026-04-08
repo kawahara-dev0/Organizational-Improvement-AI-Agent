@@ -95,29 +95,47 @@ def build_metadata_extraction_messages(conversation: str) -> tuple[str, str]:
 
 # ── Proposal generation prompt ────────────────────────────────────────────────
 
-PROPOSAL_SYSTEM = """\
+PROPOSAL_LANGUAGE_AUTO = """\
+CRITICAL: Detect the language of the consultation transcript and write the ENTIRE
+proposal — including all section headings — in that same language.
+If the transcript is in Japanese, every word of the proposal must be in Japanese.
+If in English, write entirely in English."""
+
+PROPOSAL_LANGUAGE_JA = """\
+OUTPUT LANGUAGE (fixed): Write the ENTIRE proposal — including all section headings —
+in Japanese. Do not use English except for unavoidable proper nouns or citations."""
+
+PROPOSAL_LANGUAGE_EN = """\
+OUTPUT LANGUAGE (fixed): Write the ENTIRE proposal — including all section headings —
+in English."""
+
+PROPOSAL_SYSTEM_TEMPLATE = """\
 You are a professional business writer specializing in organizational improvement.
 Your task is to transform an employee consultation session into a formal, anonymous
 improvement proposal suitable for management review.
+
+{language_instruction}
 
 Rules:
 1. Anonymization: Remove or generalize any names, specific dates, or details that
    could identify the individual.
 2. Reframing: Convert emotional or accusatory language into objective, constructive
    business language while preserving the core issue.
-3. Structure your output as:
-
-## Executive Summary
-One paragraph summarizing the issue and its organizational impact.
-
-## Root Cause Analysis
-Key structural or policy factors contributing to the issue.
-
-## Proposed Actions
-Numbered list of concrete, actionable recommendations.
-
-## Priority
-Low / Medium / High — based on potential organizational impact.
+3. Do NOT include any overall document title or header.
+4. Use EXACTLY three sections with EXACT headings depending on the output language.
+   - If output is Japanese, headings MUST be exactly:
+     ### 概要
+     ### 原因分析
+     ### 提案事項
+   - If output is English, headings MUST be exactly:
+     ### Executive Summary
+     ### Root Cause Analysis
+     ### Proposed Actions
+   Each heading must be on its own line, followed by one blank line, then the section
+   body. Do not repeat the executive summary inside the other sections.
+5. Section content rules:
+   - The first section is ONE paragraph only.
+   - The other sections may use bullet points or numbered lists.
 """
 
 PROPOSAL_USER = """\
@@ -131,10 +149,25 @@ Generate the formal improvement proposal now.
 """
 
 
-def build_proposal_messages(transcript: str, context: str) -> tuple[str, str]:
-    """Return (system_prompt, user_message) for the proposal generation call."""
+def build_proposal_messages(
+    transcript: str,
+    context: str,
+    *,
+    language: str = "auto",
+) -> tuple[str, str]:
+    """Return (system_prompt, user_message) for the proposal generation call.
+
+    language: \"auto\" (match transcript), \"ja\", or \"en\".
+    """
+    if language == "ja":
+        lang_block = PROPOSAL_LANGUAGE_JA
+    elif language == "en":
+        lang_block = PROPOSAL_LANGUAGE_EN
+    else:
+        lang_block = PROPOSAL_LANGUAGE_AUTO
+    system = PROPOSAL_SYSTEM_TEMPLATE.format(language_instruction=lang_block)
     return (
-        PROPOSAL_SYSTEM,
+        system,
         PROPOSAL_USER.format(
             transcript=transcript,
             context=context if context else "(No relevant context found)",

@@ -119,26 +119,46 @@
 
 **Deliverables:**
 
-- Department dropdown (from `departments` API).
-- Chat UI with **response mode selector** ("Personal Advice" / "Structural Perspective") positioned above the input field. Mode is sent per message; assistant bubbles display a mode badge.
+- **Always-visible two-column layout**: left pane = chat, right pane = proposal draft panel (shows
+  a placeholder until a draft is generated).
+- Header row aligned to pane boundaries: left side shows Department (optional) dropdown +
+  New Conversation; right side shows "Create proposal draft" button + "Draft output language"
+  selector (Auto / 日本語 / English).
+- `PATCH /consultations/{id}/department` endpoint for dynamic department updates mid-session.
+- Chat UI with **response mode selector** ("Personal Advice" / "Structural Perspective") positioned
+  above the input field. Mode is sent per message; assistant bubbles display a mode badge.
 - Multi-line textarea input: Enter to send, Shift+Enter for newline.
 - Loading spinner displayed while awaiting the assistant's response.
 - Feedback buttons ("Was this response helpful?") displayed below the chat history.
-- Session persistence via `localStorage`; basic error/loading states; API base URL from env.
-- **Verify:** `docker compose up` and open `http://localhost:3000`; chat works end-to-end and mode badge appears on assistant messages.
+- Session persistence via `localStorage`; error messages displayed inline within chat history;
+  API base URL from env.
+- **Verify:** `docker compose up` and open `http://localhost:3000`; chat works end-to-end,
+  mode badge appears on assistant messages, and department change is persisted via PATCH.
 
 ---
 
 ## Step 9 — Formal submission flow (UC-2)
 
-**Goal:** Draft summary/proposal, user review, atomic submit.
+**Goal:** Draft preview, user review in dedicated right panel, atomic submit.
 
 **Deliverables:**
 
-- Server action or API: generate draft `summary` + `proposal` with PII redaction and tone reframing (router uses Claude when flag on; else Gemini).
-- UI: editable draft in chat; optional name/email.
-- **Single transaction** on confirm: set `summary`, `proposal`, `user_name`, `user_email`, `is_submitted=true`, `admin_status='New'`.
-- **Verify:** Submit a test consultation end-to-end via the browser; confirm the `consultations` row in the DB has all fields populated atomically.
+- `POST /consultations/{id}/draft`: generates draft `summary` + `proposal` preview with PII
+  redaction and tone reframing (router uses Claude when flag on; else Gemini). Accepts optional
+  `language` field (`"auto"` | `"ja"` | `"en"`) to fix the draft output language. Uses fixed
+  section headings (`### 概要/原因分析/提案事項` for Japanese, `### Executive Summary/Root Cause
+  Analysis/Proposed Actions` for English) for reliable client-side parsing. Does **not** write to DB.
+- `POST /consultations/{id}/submit`: accepts the reviewed `summary`, `proposal`, and optional
+  `user_name` / `user_email` from the client. **Single transaction**: sets `summary`, `proposal`,
+  `user_name`, `user_email`, `is_submitted=true`, `admin_status='New'`.
+- UI (right panel):
+  - "Executive Summary" section body shown separately at the top of the panel.
+  - "Full Proposal" (remaining sections) shown below in a scrollable area.
+  - Fixed footer (below the scroll area): Name (optional), Email (optional), "Send to Manager"
+    button — always accessible regardless of proposal length.
+  - After submission: form replaced by thank-you message; chat input and mode selector disabled.
+- **Verify:** Submit a test consultation end-to-end via the browser; confirm the `consultations`
+  row in the DB has all fields populated atomically.
 
 ---
 

@@ -1,9 +1,11 @@
-"""Consultation session endpoints (UC-1 core).
+"""Consultation session endpoints (UC-1 & UC-2).
 
 Endpoints:
     POST   /consultations              — create a new session
     GET    /consultations/{id}         — retrieve session details
     POST   /consultations/{id}/chat    — send a chat message, get dual-perspective reply
+    POST   /consultations/{id}/draft   — generate proposal preview (no DB write)
+    POST   /consultations/{id}/submit  — atomically persist the confirmed submission
     POST   /consultations/{id}/feedback — record like/dislike
 
 Free-tier API usage controls (configurable via .env):
@@ -16,19 +18,27 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from typing import Literal
 
 from asyncpg import Connection
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.ai.enums import RouterTask
-from app.ai.prompts import ResponseMode, build_metadata_extraction_messages, build_rag_system_prompt
-from app.ai.router import invoke_chat, invoke_rag
+from app.ai.prompts import (
+    ResponseMode,
+    build_metadata_extraction_messages,
+    build_proposal_messages,
+    build_rag_system_prompt,
+)
+from app.ai.router import generate_proposal, invoke_chat, invoke_rag
 from app.ai.schemas import ChatMessage, InvokeRequest, RouterContext
 from app.consultations.repository import (
     append_message,
     create_consultation,
     get_consultation,
+    submit_consultation,
     update_feedback,
     update_metadata,
 )
@@ -85,6 +95,29 @@ class CreateResponse(BaseModel):
 
 class UpdateDepartmentRequest(BaseModel):
     department: str | None = None
+
+
+class SubmitRequest(BaseModel):
+    user_name: str | None = Field(None, max_length=200)
+    user_email: str | None = Field(None, max_length=200)
+    summary: str = Field(..., description="Summary text from draft preview")
+    proposal: str = Field(..., description="Proposal text from draft preview")
+
+
+class DraftRequest(BaseModel):
+    language: Literal["auto", "ja", "en"] = Field(
+        default="auto",
+        description='Proposal output language: "auto" matches transcript, "ja" or "en" forces.',
+    )
+
+
+class DraftResponse(BaseModel):
+    summary: str
+    proposal: str
+
+
+class SubmitResponse(BaseModel):
+    consultation_id: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -273,6 +306,199 @@ async def chat(
         provider_used=response.provider_used.value,
         mode=body.mode,
     )
+
+
+# Proposal draft: model may use ### headings or plain "Executive Summary" / etc. lines.
+_SECTION_BOUNDARY = re.compile(
+    r"(?m)^(?:#{1,4}\s+.+|Executive Summary\s*:?\s*|Root Cause Analysis\s*:?\s*"
+    r"|Proposed Actions\s*:?\s*|Recommended Actions\s*:?\s*"
+    r"|エグゼクティブサマリー\s*:?\s*|概要\s*:?\s*|原因分析\s*:?\s*|提案事項\s*:?\s*"
+    r"|提案(?:される)?(?:行動|アクション)\s*:?\s*)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _norm_section_heading(heading: str) -> str:
+    h = heading.strip()
+    h = re.sub(r"^#+\s*", "", h).strip().lower()
+    return h
+
+
+def _is_executive_heading(norm: str) -> bool:
+    return ("executive" in norm and "summary" in norm) or "エグゼクティブ" in norm or norm == "概要"
+
+
+def _is_rca_heading(norm: str) -> bool:
+    return ("root" in norm and "cause" in norm) or "原因分析" in norm
+
+
+def _is_actions_heading(norm: str) -> bool:
+    return (
+        ("proposed" in norm and "action" in norm)
+        or ("recommended" in norm and "action" in norm)
+        or norm == "提案事項"
+        or "推奨" in norm
+        or ("提案" in norm and "行動" in norm)
+    )
+
+
+def _derive_summary_and_proposal(raw: str) -> tuple[str, str]:
+    """Split model output into executive summary (short) and full proposal body (rest)."""
+    text = raw.strip()
+    if not text:
+        return "", ""
+
+    matches = list(_SECTION_BOUNDARY.finditer(text))
+    if not matches:
+        return text[:500].strip(), text
+
+    sections: list[tuple[str, str]] = []
+    if matches[0].start() > 0:
+        pre = text[: matches[0].start()].strip()
+        if pre:
+            sections.append(("", pre))
+
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        first_nl = block.find("\n")
+        if first_nl == -1:
+            heading, body = block, ""
+        else:
+            heading, body = block[:first_nl].strip(), block[first_nl + 1 :].strip()
+        sections.append((heading, body))
+
+    exec_body = ""
+    proposal_blocks: list[str] = []
+
+    for heading, body in sections:
+        if not heading.strip():
+            if body and not exec_body:
+                exec_body = body
+            elif body:
+                proposal_blocks.append(body)
+            continue
+        nh = _norm_section_heading(heading)
+        if _is_executive_heading(nh):
+            exec_body = body or exec_body
+        elif _is_rca_heading(nh) or _is_actions_heading(nh) or nh:
+            proposal_blocks.append(f"{heading}\n\n{body}".strip())
+
+    summary = exec_body.strip() or text[:500].strip()
+    proposal = "\n\n".join(b for b in proposal_blocks if b).strip()
+    if not proposal:
+        proposal = text
+    return summary, proposal
+
+
+async def _build_proposal_draft(
+    conn: Connection,
+    session: dict,
+    *,
+    language: Literal["auto", "ja", "en"] = "auto",
+) -> tuple[str, str]:
+    """Generate (summary, proposal) text from the consultation session.
+
+    Does NOT write anything to the DB — caller decides whether to persist.
+    """
+    messages = session.get("messages") or []
+    transcript = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
+
+    context_text = ""
+    if settings.rag_enabled:
+        try:
+            last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+            retrieved = await retrieve(conn, query=last_user, top_k=5)
+            context_text = format_context(retrieved)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RAG retrieval failed for proposal — proceeding: %s", exc)
+
+    system_prompt, user_message = build_proposal_messages(
+        transcript=transcript, context=context_text, language=language
+    )
+    req = InvokeRequest(
+        messages=[ChatMessage(role="user", content=user_message)],
+        context=RouterContext(
+            task=RouterTask.PROPOSAL,
+            severity=session.get("severity") or 0,
+            is_submitted=True,
+        ),
+        system_prompt=system_prompt,
+    )
+
+    try:
+        response = await generate_proposal(req)
+    except Exception as exc:
+        if _is_quota_error(exc):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "The AI service rate limit has been reached. "
+                    "Please wait a moment and try again."
+                ),
+            ) from exc
+        raise
+
+    raw = response.content.strip()
+    summary, proposal = _derive_summary_and_proposal(raw)
+    return summary, proposal
+
+
+@router.post("/{consultation_id}/draft", response_model=DraftResponse)
+async def draft_proposal(
+    consultation_id: str,
+    body: DraftRequest | None = None,
+    conn: Connection = Depends(get_conn),
+) -> DraftResponse:
+    """Generate a proposal preview for user review.
+
+    Does NOT write to the DB. The user reviews the draft and then calls
+    POST /{id}/submit to confirm and persist.
+    """
+    session = await get_consultation(conn, consultation_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Consultation not found")
+    if session.get("is_submitted"):
+        raise HTTPException(status_code=409, detail="Already submitted")
+    if not session.get("messages"):
+        raise HTTPException(status_code=422, detail="No conversation to submit")
+
+    lang: Literal["auto", "ja", "en"] = body.language if body else "auto"
+    summary, proposal = await _build_proposal_draft(conn, session, language=lang)
+    return DraftResponse(summary=summary, proposal=proposal)
+
+
+@router.post("/{consultation_id}/submit", response_model=SubmitResponse)
+async def submit(
+    consultation_id: str,
+    body: SubmitRequest,
+    conn: Connection = Depends(get_conn),
+) -> SubmitResponse:
+    """Atomically persist the confirmed submission (UC-2 final step).
+
+    The client passes the summary and proposal text from the draft preview,
+    plus optional contact info. A single UPDATE sets is_submitted=true.
+    """
+    session = await get_consultation(conn, consultation_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Consultation not found")
+    if session.get("is_submitted"):
+        raise HTTPException(status_code=409, detail="Already submitted")
+
+    updated = await submit_consultation(
+        conn,
+        consultation_id,
+        summary=body.summary,
+        proposal=body.proposal,
+        user_name=body.user_name,
+        user_email=body.user_email,
+    )
+    if not updated:
+        raise HTTPException(status_code=409, detail="Already submitted")
+
+    logger.info("consultation submitted consultation_id=%s", consultation_id)
+    return SubmitResponse(consultation_id=consultation_id)
 
 
 @router.post("/{consultation_id}/feedback", response_model=FeedbackResponse)

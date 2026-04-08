@@ -93,6 +93,41 @@ async def update_metadata(
     )
 
 
+async def submit_consultation(
+    conn: Connection,
+    consultation_id: str,
+    summary: str,
+    proposal: str,
+    user_name: str | None = None,
+    user_email: str | None = None,
+) -> bool:
+    """Atomically finalize a consultation as a formal submission.
+
+    Sets summary, proposal, optional contact info, is_submitted=true,
+    and admin_status='New' in a single UPDATE.
+    Returns True if a row was updated.
+    """
+    result = await conn.execute(
+        """
+        UPDATE consultations
+        SET summary      = $1,
+            proposal     = $2,
+            user_name    = $3,
+            user_email   = $4,
+            is_submitted = TRUE,
+            admin_status = 'New'
+        WHERE id = $5
+          AND is_submitted = FALSE
+        """,
+        summary,
+        proposal,
+        user_name,
+        user_email,
+        consultation_id,
+    )
+    return result == "UPDATE 1"
+
+
 async def update_feedback(
     conn: Connection,
     consultation_id: str,

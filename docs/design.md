@@ -59,24 +59,35 @@ Goal: Provide immediate value to the employee while capturing anonymized data fo
 Prerequisite: Triggered following UC-1 to convert private chat context into a formal record.
 
 1. Initiation:
-- User clicks "Submit this to Manager" to transition to a formal suggestion.
+- User clicks "Create proposal draft" (in the header bar) to generate a proposal preview.
+- User may select the draft output language beforehand: **Auto** (match conversation), **日本語**, or **English**.
 
 2. Interactive Review & Professional Reframing:
 - AI (Claude 4.6 Sonnet) synthesizes the session into a formal draft (Summary & Structural Proposal).
-- Anonymization: AI automatically detects and redacts/generalizes specific names or PII (Personally Identifiable Information) within the text to prevent unintended individual identification.
-- Reframing: AI identifies aggressive or emotional language and transforms it into constructive, objective, and professional business language while preserving the core issue.
-- User reviews/refines the draft in the chat interface.
+- Anonymization: AI automatically detects and redacts/generalizes specific names or PII within the text.
+- Reframing: AI converts emotional/accusatory language into objective, professional business language.
+- The draft is displayed in a **dedicated right panel** (always visible alongside the chat). The panel
+  shows a placeholder message until a draft is generated.
+- Draft output uses fixed section headings to enable reliable parsing:
+  * Japanese: `### 概要` / `### 原因分析` / `### 提案事項`
+  * English: `### Executive Summary` / `### Root Cause Analysis` / `### Proposed Actions`
+- The "Executive Summary" / `概要` section body is surfaced separately at the top of the panel.
+- This step does **not** write to the DB (`POST /consultations/{id}/draft`).
 
 3. Identity Option:
-- The UI provides optional fields for "Name" and "Email Address".
-- Providing your contact information is optional. If provided, managers may contact you for further hearings or recognition regarding this proposal. If left blank, your submission remains anonymous.
+- The right panel's fixed footer provides optional "Name" and "Email" fields (always accessible,
+  independent of proposal text scroll position).
+- Contact information is optional. If provided, managers may contact the submitter for follow-up.
 
 4. Final Persistence (Atomic Update):
-- Upon clicking "Confirm & Send", a single DB update occurs:
+- Upon clicking "Send to Manager", the UI sends the reviewed draft content together with optional
+  contact info to `POST /consultations/{id}/submit`, and a single DB update occurs:
   * Populate `#consultations.summary` and `#consultations.proposal`.
   * Set `#consultations.user_name` and `#consultations.user_email`.
   * Set `#consultations.is_submitted` to True.
   * Set `#consultations.admin_status` to "New".
+- After submission, the right panel shows a thank-you message in place of the form. The chat input
+  and mode selector are disabled (not hidden).
 
 ### UC-Admin: Managerial Dashboard & Strategic Control
 Actor: Manager (Admin)
