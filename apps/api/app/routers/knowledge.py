@@ -17,11 +17,16 @@ from asyncpg import Connection
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
+from app.auth.deps import require_admin
 from app.db.session import get_conn
 from app.kb import embedder, parser, repository
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+router = APIRouter(
+    prefix="/knowledge",
+    tags=["knowledge"],
+    dependencies=[Depends(require_admin)],
+)
 
 ALLOWED_EXTENSIONS = {"pdf", "docx", "xlsx", "xls"}
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB

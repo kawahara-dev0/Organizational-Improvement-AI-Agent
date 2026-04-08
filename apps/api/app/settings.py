@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # turns. Set to 0 to disable extraction entirely.
     metadata_extraction_interval: int = 3
 
+    # ── Admin auth ────────────────────────────────────────────
+    admin_password: str = "changeme"
+    jwt_secret: str = "changeme-jwt-secret-replace-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_hours: int = 8
+
     # ── App ───────────────────────────────────────────────────
     app_env: str = "development"
     log_level: str = "INFO"
