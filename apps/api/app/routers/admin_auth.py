@@ -2,6 +2,7 @@
 
 POST /admin/login  — verify ADMIN_PASSWORD, return a short-lived JWT.
 """
+
 from __future__ import annotations
 
 import secrets

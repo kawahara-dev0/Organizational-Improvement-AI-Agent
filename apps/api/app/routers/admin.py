@@ -7,6 +7,7 @@ Endpoints:
   PUT    /admin/departments/{id}   — rename a department
   DELETE /admin/departments/{id}   — delete a department
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException

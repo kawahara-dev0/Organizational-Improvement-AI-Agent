@@ -3,6 +3,7 @@
 Uses a single admin password (ADMIN_PASSWORD in .env) and issues short-lived
 JWT tokens. The `require_admin` FastAPI dependency protects admin-only routes.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta

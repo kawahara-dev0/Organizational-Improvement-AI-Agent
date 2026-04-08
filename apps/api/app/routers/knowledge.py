@@ -66,7 +66,9 @@ async def _parse_embed_store(
     chunks = parser.chunk_pages(pages, source_file=filename, category=category)
     vectors = await embedder.embed_chunks(chunks)
     ids = await chunk_repo.upsert_chunks(
-        conn, chunks, vectors,
+        conn,
+        chunks,
+        vectors,
         document_id=document_id,
         version_id=version_id,
     )
@@ -129,7 +131,10 @@ async def create_document(
 
     logger.info(
         "Created document %r (id=%s) v%d — %d chunks",
-        title, document_id, version_no, chunk_count,
+        title,
+        document_id,
+        version_no,
+        chunk_count,
     )
     return {
         "document_id": document_id,
@@ -238,9 +243,7 @@ async def upload_new_version(
 
     await doc_repo.finalize_version(conn, document_id, version_id, chunk_count)
 
-    logger.info(
-        "New version v%d for document %s — %d chunks", version_no, document_id, chunk_count
-    )
+    logger.info("New version v%d for document %s — %d chunks", version_no, document_id, chunk_count)
     return {
         "document_id": document_id,
         "version_id": version_id,

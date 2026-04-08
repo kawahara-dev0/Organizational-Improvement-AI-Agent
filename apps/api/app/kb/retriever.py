@@ -39,9 +39,7 @@ async def retrieve(
     # Always restrict to chunks from active document versions (if version data
     # is present). Legacy chunks (version_id IS NULL) are included as well so
     # that data uploaded before Migration 003 keeps working.
-    conditions: list[str] = [
-        "(kb.version_id IS NULL OR v.is_active = TRUE)"
-    ]
+    conditions: list[str] = ["(kb.version_id IS NULL OR v.is_active = TRUE)"]
     params: list = [vector_str, top_k]
 
     if source_file is not None:

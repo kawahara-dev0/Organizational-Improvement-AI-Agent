@@ -8,6 +8,7 @@ Document lifecycle
 4. finalize_version()              → sets chunk_count, activates new version,
                                      deactivates old ones, updates current_version_id
 """
+
 from __future__ import annotations
 
 from asyncpg import Connection
@@ -65,9 +66,7 @@ async def get_document(conn: Connection, document_id: str) -> dict | None:
     return {**dict(doc_row), "versions": [dict(v) for v in version_rows]}
 
 
-async def create_document(
-    conn: Connection, title: str, category: str
-) -> str:
+async def create_document(conn: Connection, title: str, category: str) -> str:
     """Insert a new kb_documents row and return its UUID string."""
     row = await conn.fetchrow(
         "INSERT INTO kb_documents (title, category) VALUES ($1, $2) RETURNING id::text",
@@ -106,9 +105,7 @@ async def archive_document(conn: Connection, document_id: str) -> bool:
 # ── Versions ──────────────────────────────────────────────────────────────────
 
 
-async def create_version(
-    conn: Connection, document_id: str, source_file: str
-) -> tuple[str, int]:
+async def create_version(conn: Connection, document_id: str, source_file: str) -> tuple[str, int]:
     """Insert a new kb_document_versions row.
 
     Returns (version_id, version_no). Does NOT activate yet; call
@@ -177,9 +174,7 @@ async def delete_version(conn: Connection, version_id: str) -> None:
     )
 
 
-async def list_chunks_for_version(
-    conn: Connection, version_id: str
-) -> list[dict]:
+async def list_chunks_for_version(conn: Connection, version_id: str) -> list[dict]:
     """Return all chunks belonging to a specific version (view only)."""
     rows = await conn.fetch(
         """

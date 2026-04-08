@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 EMBEDDING_MODEL = "gemini-embedding-001"
 
 # ── Rate-limit parameters (tuned for free tier) ───────────────────────────────
-EMBED_BATCH_SIZE = 3       # chunks per API call (smaller batch for CJK safety)
-MIN_BATCH_INTERVAL = 1.0   # seconds between requests  → max 60 RPM  (limit 100)
-TPM_LIMIT = 20_000         # conservative ceiling (actual 30 K, keeps headroom)
+EMBED_BATCH_SIZE = 3  # chunks per API call (smaller batch for CJK safety)
+MIN_BATCH_INTERVAL = 1.0  # seconds between requests  → max 60 RPM  (limit 100)
+TPM_LIMIT = 20_000  # conservative ceiling (actual 30 K, keeps headroom)
 # Conservative estimate: 1 char ≈ 1 token for CJK-heavy documents.
 CHARS_PER_TOKEN = 1
 
