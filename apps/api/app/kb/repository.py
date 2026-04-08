@@ -11,6 +11,7 @@ from app.kb.parser import Chunk
 
 # ── Write ─────────────────────────────────────────────────────────────────────
 
+
 async def upsert_chunks(
     conn: Connection,
     chunks: list[Chunk],
@@ -36,6 +37,7 @@ async def upsert_chunks(
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────
+
 
 async def list_chunks(
     conn: Connection,
@@ -80,6 +82,7 @@ async def get_chunk(conn: Connection, chunk_id: str) -> dict | None:
 
 # ── Update ────────────────────────────────────────────────────────────────────
 
+
 async def update_chunk_content(
     conn: Connection,
     chunk_id: str,
@@ -101,6 +104,7 @@ async def update_chunk_content(
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
+
 
 async def delete_chunk(conn: Connection, chunk_id: str) -> bool:
     result = await conn.execute(

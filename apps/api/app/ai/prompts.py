@@ -48,6 +48,7 @@ Company context (retrieved from internal knowledge base):
 
 # ── RAG prompt builder ────────────────────────────────────────────────────────
 
+
 def build_rag_system_prompt(context: str, mode: ResponseMode = "personal") -> str:
     """Return the system prompt for the given response mode with context injected."""
     ctx = context if context else "(No relevant context found)"

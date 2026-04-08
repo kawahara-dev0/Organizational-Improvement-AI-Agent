@@ -39,6 +39,7 @@ def _check_extension(filename: str) -> str:
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 
+
 class UploadResponse(BaseModel):
     source_file: str
     chunks_created: int
@@ -74,6 +75,7 @@ async def upload_document(
 
 # ── List / Get ────────────────────────────────────────────────────────────────
 
+
 @router.get("/chunks")
 async def list_chunks(
     source_file: str | None = Query(default=None),
@@ -97,6 +99,7 @@ async def get_chunk(
 
 # ── Update ────────────────────────────────────────────────────────────────────
 
+
 class UpdateChunkRequest(BaseModel):
     content: str
 
@@ -117,6 +120,7 @@ async def update_chunk(
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
+
 
 @router.delete("/chunks/{chunk_id}")
 async def delete_chunk(

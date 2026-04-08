@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.session import close_pool, get_pool
-from app.routers import consultations, health, knowledge
+from app.routers import consultations, departments, health, knowledge
 from app.settings import settings
 
 logging.basicConfig(
@@ -41,5 +41,6 @@ async def shutdown() -> None:
 
 
 app.include_router(health.router)
+app.include_router(departments.router)
 app.include_router(knowledge.router)
 app.include_router(consultations.router)

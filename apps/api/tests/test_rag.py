@@ -38,7 +38,7 @@ def _unit_vector(hot_dims: range) -> list[float]:
     v = [0.0] * DIMS
     for d in hot_dims:
         v[d] = 1.0
-    norm = sum(x ** 2 for x in v) ** 0.5
+    norm = sum(x**2 for x in v) ** 0.5
     return [x / norm for x in v]
 
 
@@ -73,6 +73,7 @@ async def _insert_chunk(
 
 
 # ── Basic retrieval ────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_retrieve_returns_closest_first(db_conn) -> None:
@@ -128,6 +129,7 @@ async def test_retrieve_empty_db_returns_empty_list(db_conn) -> None:
 
 
 # ── Metadata filters ───────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_retrieve_filter_by_source_file(db_conn) -> None:
@@ -185,6 +187,7 @@ async def test_retrieve_result_structure(db_conn) -> None:
 
 # ── format_context helper ──────────────────────────────────────────────────────
 
+
 def test_format_context_produces_numbered_list() -> None:
     chunks = [
         {"content": "First chunk.", "metadata": {"source_file": "a.pdf", "page_number": 1}},
@@ -203,6 +206,7 @@ def test_format_context_empty_list() -> None:
 
 
 # ── Prompt builders ────────────────────────────────────────────────────────────
+
 
 def test_build_rag_system_prompt_personal_injects_context() -> None:
     """Personal mode prompt should contain the context and empathetic tone cues."""

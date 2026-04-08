@@ -8,14 +8,18 @@ import uuid
 from asyncpg import Connection
 
 
-async def create_consultation(conn: Connection) -> str:
-    """Insert a new empty consultation row and return its UUID."""
+async def create_consultation(
+    conn: Connection,
+    department: str | None = None,
+) -> str:
+    """Insert a new consultation row and return its UUID."""
     row_id = str(uuid.uuid4())
     await conn.execute(
         """
-        INSERT INTO consultations (id) VALUES ($1)
+        INSERT INTO consultations (id, department) VALUES ($1, $2)
         """,
         row_id,
+        department,
     )
     return row_id
 
@@ -44,9 +48,17 @@ async def append_message(
     consultation_id: str,
     role: str,
     content: str,
+    mode: str | None = None,
 ) -> None:
-    """Append a single message object to the messages JSONB array."""
-    message = json.dumps({"role": role, "content": content})
+    """Append a single message object to the messages JSONB array.
+
+    The mode field (personal | structural) is stored on assistant messages
+    so the UI can restore mode badges when reloading the session.
+    """
+    msg: dict = {"role": role, "content": content}
+    if mode is not None:
+        msg["mode"] = mode
+    message = json.dumps(msg)
     await conn.execute(
         """
         UPDATE consultations

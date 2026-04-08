@@ -21,6 +21,7 @@ from app.ai.schemas import ChatMessage, InvokeRequest, RouterContext
 
 # ── decide() — pure routing logic ────────────────────────────────────────────
 
+
 class TestDecideWithFlagOff:
     """When ENABLE_CLAUDE_ROUTING=false, always return Gemini."""
 
@@ -96,6 +97,7 @@ class TestDecideWithFlagOn:
 
 
 # ── invoke_* — mock LLM calls ────────────────────────────────────────────────
+
 
 def _make_request(task: RouterTask, severity: int = 0) -> InvokeRequest:
     return InvokeRequest(

@@ -15,8 +15,8 @@ from docx import Document as DocxDocument
 from pypdf import PdfReader
 
 # ── Chunking parameters ───────────────────────────────────────────────────────
-CHUNK_SIZE = 800      # characters per chunk
-CHUNK_OVERLAP = 100   # overlap between consecutive chunks
+CHUNK_SIZE = 800  # characters per chunk
+CHUNK_OVERLAP = 100  # overlap between consecutive chunks
 
 
 @dataclass
@@ -33,6 +33,7 @@ class Chunk:
 
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
+
 
 def _parse_pdf(data: bytes) -> list[RawPage]:
     reader = PdfReader(io.BytesIO(data))
@@ -82,6 +83,7 @@ def parse(data: bytes, filename: str) -> list[RawPage]:
 
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
+
 
 def _split_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     chunks = []

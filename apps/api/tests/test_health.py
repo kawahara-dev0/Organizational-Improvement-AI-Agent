@@ -12,9 +12,7 @@ async def test_health_ok() -> None:
     mock_conn.fetchval = AsyncMock(return_value=1)
 
     with patch("app.routers.health.get_conn", return_value=mock_conn):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     assert response.status_code == 200

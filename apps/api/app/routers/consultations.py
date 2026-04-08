@@ -53,6 +53,7 @@ def _is_quota_error(exc: Exception) -> bool:
 
 # ── Request / Response schemas ────────────────────────────────────────────────
 
+
 class ChatRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=4000)
     mode: ResponseMode = "personal"
@@ -74,11 +75,20 @@ class FeedbackResponse(BaseModel):
     feedback: int
 
 
+class CreateRequest(BaseModel):
+    department: str | None = None
+
+
 class CreateResponse(BaseModel):
     consultation_id: str
 
 
+class UpdateDepartmentRequest(BaseModel):
+    department: str | None = None
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _messages_to_lc(messages: list[dict]) -> list[ChatMessage]:
     """Convert stored message dicts to ChatMessage objects."""
@@ -108,9 +118,7 @@ async def _extract_and_persist_metadata(
     Failures are silently swallowed — metadata extraction is best-effort and
     must never block the main chat response.
     """
-    conversation_text = "\n".join(
-        f"{m['role'].capitalize()}: {m['content']}" for m in messages
-    )
+    conversation_text = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
     system_prompt, user_message = build_metadata_extraction_messages(conversation_text)
 
     try:
@@ -150,13 +158,34 @@ async def _extract_and_persist_metadata(
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+
 @router.post("", response_model=CreateResponse, status_code=201)
 async def create_session(
+    body: CreateRequest = CreateRequest(),
     conn: Connection = Depends(get_conn),
 ) -> CreateResponse:
     """Create a new consultation session and return its ID."""
-    consultation_id = await create_consultation(conn)
+    consultation_id = await create_consultation(conn, department=body.department)
     return CreateResponse(consultation_id=consultation_id)
+
+
+@router.patch("/{consultation_id}/department", status_code=204)
+async def update_department(
+    consultation_id: str,
+    body: UpdateDepartmentRequest,
+    conn: Connection = Depends(get_conn),
+) -> None:
+    """Update the department field of an existing consultation."""
+    session = await get_consultation(conn, consultation_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Consultation not found")
+    await update_metadata(
+        conn,
+        consultation_id,
+        department=body.department,
+        category=session.get("category"),
+        severity=session.get("severity") or 0,
+    )
 
 
 @router.get("/{consultation_id}")
@@ -224,21 +253,19 @@ async def chat(
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "AI サービスのリクエスト上限に達しました。"
-                    "しばらく待ってから再送信してください。"
+                    "The AI service rate limit has been reached. "
+                    "Please wait a moment and try again."
                 ),
             ) from exc
         raise
 
-    # 4. Persist assistant reply
-    await append_message(conn, consultation_id, "assistant", response.content)
+    # 4. Persist assistant reply (with mode so UI can restore badges on reload)
+    await append_message(conn, consultation_id, "assistant", response.content, mode=body.mode)
 
     # 5. Metadata extraction — only every N assistant turns (best-effort, non-blocking)
     updated_session = await get_consultation(conn, consultation_id)
     if updated_session and _should_extract_metadata(updated_session["messages"]):
-        await _extract_and_persist_metadata(
-            conn, consultation_id, updated_session["messages"]
-        )
+        await _extract_and_persist_metadata(conn, consultation_id, updated_session["messages"])
 
     return ChatResponse(
         consultation_id=consultation_id,

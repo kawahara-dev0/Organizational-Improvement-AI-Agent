@@ -12,8 +12,14 @@ type ResponseMode = "personal" | "structural";
 
 type SessionResponse = {
   id: string;
+  department?: string | null;
   messages: Message[];
   feedback: number;
+};
+
+type Department = {
+  id: string;
+  name: string;
 };
 
 const STORAGE_KEY = "oiagent:consultation_id";
@@ -40,27 +46,41 @@ export default function Home() {
   const [feedback, setFeedback] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [department, setDepartment] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch(`${apiBase}/departments`);
+        if (res.ok) {
+          const data = (await res.json()) as Department[];
+          setDepartments(data);
+        }
+      } catch {
+        // departments are optional; silently ignore
+      }
+    })();
+
     const saved = window.localStorage.getItem(STORAGE_KEY);
     if (!saved) return;
     void loadSession(saved);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-scroll to bottom when messages change
+  // Auto-scroll to bottom when messages or error change
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, error]);
 
   async function createSession(): Promise<string> {
     const response = await fetch(`${apiBase}/consultations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ department: department || null }),
     });
     if (!response.ok) {
       throw new Error(`Failed to create session (${response.status})`);
@@ -81,6 +101,7 @@ export default function Home() {
     setConsultationId(data.id);
     setMessages(data.messages ?? []);
     setFeedback(data.feedback ?? 0);
+    setDepartment(data.department ?? "");
     window.localStorage.setItem(STORAGE_KEY, data.id);
   }
 
@@ -162,11 +183,26 @@ export default function Home() {
     }
   }
 
+  async function handleDepartmentChange(value: string) {
+    setDepartment(value);
+    if (!consultationId) return;
+    try {
+      await fetch(`${apiBase}/consultations/${consultationId}/department`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ department: value || null }),
+      });
+    } catch {
+      // best-effort; ignore errors
+    }
+  }
+
   function resetSession() {
     setConsultationId("");
     setMessages([]);
     setFeedback(0);
     setError("");
+    setDepartment("");
     window.localStorage.removeItem(STORAGE_KEY);
   }
 
@@ -174,18 +210,35 @@ export default function Home() {
     <main className="mx-auto flex h-screen w-full max-w-3xl flex-col p-4 md:p-6">
       {/* Header */}
       <h1 className="text-xl font-semibold">Organizational Improvement AI Agent</h1>
-      <p className="mt-1 text-sm text-gray-500">
-        Conversation history is preserved within the session for context-aware responses.
-      </p>
 
-      <div className="mt-3 rounded border border-white/10 p-2 text-xs text-gray-500">
-        Session: {consultationId || "(new)"}{" "}
+      {/* Department selector + New Conversation — same row */}
+      <div className="mt-3 flex items-center gap-3">
+        {departments.length > 0 && (
+          <>
+            <label htmlFor="department" className="text-xs text-gray-500 shrink-0">
+              Department:
+            </label>
+            <select
+              id="department"
+              value={department}
+              onChange={(e) => void handleDepartmentChange(e.target.value)}
+              className="rounded border border-white/20 bg-zinc-800 px-2 py-1 text-xs text-white focus:border-white/40 focus:outline-none"
+            >
+              <option value="">— Select —</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.name}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         <button
           type="button"
           onClick={resetSession}
-          className="ml-2 rounded border border-white/20 px-2 py-1 hover:border-white/40 hover:text-white/60"
+          className="ml-auto rounded border border-white/20 px-3 py-1 text-xs text-gray-500 hover:border-white/40 hover:text-white/60"
         >
-          New session
+          New Conversation
         </button>
       </div>
 
@@ -250,28 +303,32 @@ export default function Home() {
             <span className="text-sm text-white/40">Thinking…</span>
           </div>
         )}
+        {/* Error message — inline in chat area, not saved to messages */}
+        {error && (
+          <div className="mr-8 rounded border border-red-500/30 bg-red-900/20 p-3 text-sm text-red-400">
+            {error}
+          </div>
+        )}
       </section>
 
-      {/* Feedback — below history */}
-      {consultationId && (
-        <div className="mt-2 flex items-center gap-2 text-sm">
-          <span className="text-gray-500">Was this response helpful?</span>
-          <button
-            type="button"
-            onClick={() => void submitFeedback(1)}
-            className={`rounded border border-white/20 px-2 py-1 transition-colors ${feedback === 1 ? "bg-green-900/40 border-green-500/50 text-green-400" : "text-white/50 hover:text-white/80"}`}
-          >
-            👍
-          </button>
-          <button
-            type="button"
-            onClick={() => void submitFeedback(-1)}
-            className={`rounded border border-white/20 px-2 py-1 transition-colors ${feedback === -1 ? "bg-red-900/40 border-red-500/50 text-red-400" : "text-white/50 hover:text-white/80"}`}
-          >
-            👎
-          </button>
-        </div>
-      )}
+      {/* Feedback — always reserve space below history */}
+      <div className={`mt-2 flex items-center gap-2 text-sm ${consultationId ? "visible" : "invisible"}`}>
+        <span className="text-gray-500">Was this response helpful?</span>
+        <button
+          type="button"
+          onClick={() => void submitFeedback(1)}
+          className={`rounded border border-white/20 px-2 py-1 transition-colors ${feedback === 1 ? "bg-green-900/40 border-green-500/50 text-green-400" : "text-white/50 hover:text-white/80"}`}
+        >
+          👍
+        </button>
+        <button
+          type="button"
+          onClick={() => void submitFeedback(-1)}
+          className={`rounded border border-white/20 px-2 py-1 transition-colors ${feedback === -1 ? "bg-red-900/40 border-red-500/50 text-red-400" : "text-white/50 hover:text-white/80"}`}
+        >
+          👎
+        </button>
+      </div>
 
       {/* Mode selector — above input */}
       <div className="mt-3 flex gap-2">
@@ -293,7 +350,6 @@ export default function Home() {
           </button>
         ))}
       </div>
-      <p className="mt-1 text-xs text-gray-500">{MODE_DESCRIPTIONS[mode]}</p>
 
       {/* Input area */}
       <form onSubmit={sendMessage} className="mt-2 flex items-end gap-2">
@@ -319,7 +375,6 @@ export default function Home() {
         </button>
       </form>
 
-      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </main>
   );
 }

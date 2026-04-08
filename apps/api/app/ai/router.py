@@ -113,9 +113,7 @@ async def generate_proposal(request: InvokeRequest) -> InvokeResponse:
     decision = decide(proposal_context)
     model = _get_model(decision.provider)
     lc_messages = _build_lc_messages(request.messages, request.system_prompt)
-    logger.info(
-        "generate_proposal provider=%s reason=%s", decision.provider, decision.reason
-    )
+    logger.info("generate_proposal provider=%s reason=%s", decision.provider, decision.reason)
     result = await model.ainvoke(lc_messages)
     return InvokeResponse(content=result.content, provider_used=decision.provider)
 
@@ -131,8 +129,6 @@ async def invoke_analytical(request: InvokeRequest) -> InvokeResponse:
     decision = decide(analytical_context)
     model = _get_model(decision.provider)
     lc_messages = _build_lc_messages(request.messages, request.system_prompt)
-    logger.info(
-        "invoke_analytical provider=%s reason=%s", decision.provider, decision.reason
-    )
+    logger.info("invoke_analytical provider=%s reason=%s", decision.provider, decision.reason)
     result = await model.ainvoke(lc_messages)
     return InvokeResponse(content=result.content, provider_used=decision.provider)

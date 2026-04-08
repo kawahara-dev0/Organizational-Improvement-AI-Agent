@@ -68,12 +68,14 @@ async def retrieve(
     rows = await conn.fetch(sql, *params)
     results = []
     for row in rows:
-        results.append({
-            "id": str(row["id"]),
-            "content": row["content"],
-            "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
-            "similarity": float(row["similarity"]),
-        })
+        results.append(
+            {
+                "id": str(row["id"]),
+                "content": row["content"],
+                "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                "similarity": float(row["similarity"]),
+            }
+        )
 
     logger.debug(
         "RAG retrieve query=%r top_k=%d filters={source_file=%r, category=%r} → %d results",
