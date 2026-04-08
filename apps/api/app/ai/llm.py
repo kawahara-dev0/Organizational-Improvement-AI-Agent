@@ -13,7 +13,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from app.settings import settings
 
 # Model identifiers
-GEMINI_MODEL = "gemini-2.0-flash-lite"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 CLAUDE_MODEL = "claude-sonnet-4-5"
 
 

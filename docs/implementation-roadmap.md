@@ -64,7 +64,7 @@
 **Deliverables:**
 
 - Interface: `invoke_chat`, `invoke_rag`, `generate_proposal`, etc., backed by LangChain/LangGraph where appropriate.
-- **Default:** all paths use Gemini 2.0 Flash-Lite.
+- **Default:** all paths use Gemini 2.5 Flash-Lite.
 - **Conditional Claude:** when `severity >= 4`, when generating formal `proposal` after submit, or Top-down analytical mode — **gated by env var** (`ENABLE_CLAUDE_ROUTING=true`) so dev/test stay on Gemini only.
 - Unit tests for routing decisions (mock LLMs).
 - **Verify:** `docker compose run --rm api pytest tests/test_router.py` passes.
@@ -91,7 +91,7 @@
 **Deliverables:**
 
 - Vector search over `knowledge_base` with metadata filters if needed.
-- Prompt templates for “Personal Advice” vs “Structural Perspective” sections.
+- Separate prompt templates for **"Personal Advice"** (empathetic, employee-focused) and **"Structural Perspective"** (systemic, management-focused). Both templates instruct the AI to reply in the same language as the user's message and to omit markdown headings from the response.
 - Integration tests against a small fixture index.
 - **Verify:** `docker compose run --rm api pytest tests/test_rag.py` passes against the local `db` container.
 
@@ -99,14 +99,17 @@
 
 ## Step 7 — Consultation session API (UC-1 core)
 
-**Goal:** Chat turn that persists/consults `consultations` and returns dual-perspective answers.
+**Goal:** Chat turn that persists conversation history in `consultations.messages` and returns a single-perspective answer selected by the user.
 
 **Deliverables:**
 
-- Create/update `consultations` row; store transcript or message history (design prefers updating `department`, `category`, `severity` as conversation evolves — define storage: JSONB column or separate `messages` table).
-- After each assistant turn (or on a schedule): call **Gemini** metadata extractor to refresh `department`, `category`, `severity` (0–5).
-- `feedback` endpoint for Like/Dislike.
-- **Verify:** `docker compose up` and send a test chat message via `curl`; confirm `consultations` row is created in the `db` container with AI-extracted metadata.
+- `POST /consultations` — create a new session row.
+- `GET /consultations/{id}` — retrieve session state including full message history.
+- `POST /consultations/{id}/chat` — accept `{ content, mode }` where `mode` is `"personal"` or `"structural"`. Appends user and assistant messages (with `mode`) to the `messages` JSONB column. Calls RAG retrieval (conditional on `RAG_ENABLED`) and selects the prompt template matching the requested mode.
+- After the **first** assistant turn, and then every `METADATA_EXTRACTION_INTERVAL` turns: call **Gemini** metadata extractor to refresh `department`, `category`, `severity` (0–5).
+- `POST /consultations/{id}/feedback` — record Like/Dislike.
+- Free-tier controls: `RAG_ENABLED` and `METADATA_EXTRACTION_INTERVAL` env flags; Gemini 429 errors are caught and surfaced as HTTP 503 with a user-friendly message.
+- **Verify:** `docker compose up` and send a test chat message via `curl`; confirm `consultations` row is created in the `db` container with `messages` array populated and AI-extracted metadata.
 
 ---
 
@@ -117,9 +120,12 @@
 **Deliverables:**
 
 - Department dropdown (from `departments` API).
-- Chat UI, feedback buttons, “Submit to Manager” entry point.
-- Env-based API base URL; basic error/loading states.
-- **Verify:** `docker compose up` and open `http://localhost:3000`; department dropdown populates from the API container.
+- Chat UI with **response mode selector** ("Personal Advice" / "Structural Perspective") positioned above the input field. Mode is sent per message; assistant bubbles display a mode badge.
+- Multi-line textarea input: Enter to send, Shift+Enter for newline.
+- Loading spinner displayed while awaiting the assistant's response.
+- Feedback buttons ("Was this response helpful?") displayed below the chat history.
+- Session persistence via `localStorage`; basic error/loading states; API base URL from env.
+- **Verify:** `docker compose up` and open `http://localhost:3000`; chat works end-to-end and mode badge appears on assistant messages.
 
 ---
 
@@ -169,7 +175,7 @@
 - Aggregations for `category` × `severity` heatmap (per department filters if required by product).
 - Gemini-generated bullet summary from recent consultation metadata.
 - Proposal list filter `is_submitted=true`; detail view; `admin_status` updates.
-- Top-down “analytical” mode (multi-proposal / policy draft) behind same model router.
+- Top-down "analytical" mode (multi-proposal / policy draft) behind same model router.
 
 ---
 

@@ -204,16 +204,40 @@ def test_format_context_empty_list() -> None:
 
 # ── Prompt builders ────────────────────────────────────────────────────────────
 
-def test_build_rag_system_prompt_injects_context() -> None:
-    prompt = build_rag_system_prompt("Some HR context here.")
+def test_build_rag_system_prompt_personal_injects_context() -> None:
+    """Personal mode prompt should contain the context and empathetic tone cues."""
+    prompt = build_rag_system_prompt("Some HR context here.", mode="personal")
     assert "Some HR context here." in prompt
-    assert "Personal Advice" in prompt
-    assert "Structural Perspective" in prompt
+    assert "empathetic" in prompt.lower()
+    # Must NOT include markdown headings instruction
+    assert "Do NOT include any markdown headings" in prompt
+    # Must instruct AI to reply in the user's language
+    assert "same language" in prompt
+
+
+def test_build_rag_system_prompt_structural_injects_context() -> None:
+    """Structural mode prompt should contain the context and systemic analysis cues."""
+    prompt = build_rag_system_prompt("Some HR context here.", mode="structural")
+    assert "Some HR context here." in prompt
+    assert "structural" in prompt.lower()
+    # Must NOT include markdown headings instruction
+    assert "Do NOT include any markdown headings" in prompt
+    # Must instruct AI to reply in the user's language
+    assert "same language" in prompt
+
+
+def test_build_rag_system_prompt_modes_differ() -> None:
+    """Personal and structural prompts should be distinct from each other."""
+    personal = build_rag_system_prompt("ctx", mode="personal")
+    structural = build_rag_system_prompt("ctx", mode="structural")
+    assert personal != structural
 
 
 def test_build_rag_system_prompt_no_context() -> None:
-    prompt = build_rag_system_prompt("")
-    assert "No relevant context found" in prompt
+    """Empty context string should be replaced with a fallback message."""
+    for mode in ("personal", "structural"):
+        prompt = build_rag_system_prompt("", mode=mode)
+        assert "No relevant context found" in prompt
 
 
 def test_build_metadata_extraction_messages() -> None:

@@ -1,30 +1,46 @@
 """Prompt templates for RAG-augmented consultation responses.
 
-The consultation response is always structured into two sections:
-  1. Personal Advice      — empathetic, practical actions for the employee
-  2. Structural Perspective — root-cause analysis grounded in retrieved KB context
+Response mode (selected by the user in the UI):
+  - "personal"    → Personal Advice only   — empathetic, practical actions
+  - "structural"  → Structural Perspective only — root-cause analysis grounded in KB
 """
 
 from __future__ import annotations
 
-# ── System prompt ─────────────────────────────────────────────────────────────
+from typing import Literal
 
-CONSULTATION_SYSTEM = """\
+ResponseMode = Literal["personal", "structural"]
+
+# ── Personal Advice system prompt ─────────────────────────────────────────────
+
+PERSONAL_ADVICE_SYSTEM = """\
 You are an empathetic and professional organizational consultant AI.
-Your role is to help employees navigate workplace challenges while identifying
-structural issues that management should address.
+Your role is to support employees who are facing workplace challenges.
 
-When you respond, always structure your answer in exactly two sections:
+IMPORTANT: Always reply in the same language the user wrote in.
 
-## Personal Advice
-Provide immediate, practical, and empathetic guidance the employee can act on today.
-Keep the tone warm and supportive.
+Give immediate, practical, and empathetic guidance the employee can act on today.
+Keep the tone warm, supportive, and non-judgmental.
+Focus on the employee's own feelings, options, and concrete next steps they can take.
+Do NOT include any markdown headings or section labels in your response.
 
-## Structural Perspective
-Analyze the root cause of the situation from an organizational viewpoint.
+Company context (for background reference):
+{context}
+"""
+
+# ── Structural Perspective system prompt ──────────────────────────────────────
+
+STRUCTURAL_PERSPECTIVE_SYSTEM = """\
+You are a professional organizational consultant AI.
+Your role is to analyse workplace challenges from a structural and systemic viewpoint.
+
+IMPORTANT: Always reply in the same language the user wrote in.
+
+Analyse the root cause of the situation from an organizational viewpoint.
 Ground your analysis in the company context provided below.
 Identify systemic patterns, policy gaps, or structural factors — not individual blame.
 Use neutral, professional, constructive language suitable for management review.
+Do NOT include any markdown headings or section labels in your response.
 
 Company context (retrieved from internal knowledge base):
 {context}
@@ -32,9 +48,12 @@ Company context (retrieved from internal knowledge base):
 
 # ── RAG prompt builder ────────────────────────────────────────────────────────
 
-def build_rag_system_prompt(context: str) -> str:
-    """Return the system prompt with the retrieved context injected."""
-    return CONSULTATION_SYSTEM.format(context=context if context else "(No relevant context found)")
+def build_rag_system_prompt(context: str, mode: ResponseMode = "personal") -> str:
+    """Return the system prompt for the given response mode with context injected."""
+    ctx = context if context else "(No relevant context found)"
+    if mode == "structural":
+        return STRUCTURAL_PERSPECTIVE_SYSTEM.format(context=ctx)
+    return PERSONAL_ADVICE_SYSTEM.format(context=ctx)
 
 
 # ── Metadata extraction prompt ────────────────────────────────────────────────

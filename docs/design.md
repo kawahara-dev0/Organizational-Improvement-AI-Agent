@@ -14,7 +14,7 @@
 - **Backend**: Python 3.12, FastAPI
 - **Database**: Supabase (PostgreSQL + pgvector)
 - **Orchestration**: LangChain / LangGraph
-- **AI Models**: Claude 4.6 Sonnet, Gemini 2.0 Flash-Lite (Sonnet for deep reasoning; Flash for routing and RAG. )
+- **AI Models**: Claude 4.6 Sonnet, Gemini 2.5 Flash-Lite (Sonnet for deep reasoning; Flash for routing and RAG.)
 
 ## 3. Actor Definitions
 - **User**: Seeking help for personal issues or suggesting organizational changes.
@@ -31,25 +31,26 @@ Goal: Provide immediate value to the employee while capturing anonymized data fo
   Note: '#department' is dynamic and managed via the Manager Dashboard (UC-Admin).
 - Employee describes their situation in the chat interface.
 
-2. AI Routing & Real-time Logging (Gemini 2.0 Flash-Lite):
+2. AI Routing & Real-time Logging (Gemini 2.5 Flash-Lite):
 - AI analyzes the input to extract:
   * `#consultations.department`
   * `#consultations.category` (e.g., Compensation, Interpersonal)
   * `#consultations.severity` (Scale: 0-5. Set to 0 if abstract/pending).
-- Dynamic Updates: As the conversation progresses and details become clearer, the AI continuously updates these fields in the DB to reflect the most accurate state.
+- Dynamic Updates: As the conversation progresses, the AI periodically refreshes these fields (every N assistant turns, configurable via `METADATA_EXTRACTION_INTERVAL`).
 
 3. Contextual Analysis (LLM + RAG):
-- RAG Search: AI searches `#knowledge_base` for relevant company policies and strategy documents.
-- Dual-Perspective Response: AI provides a response categorized into:
-  * Personal Advice: Practical, empathetic immediate actions for the employee.
-  * Structural Perspective: Root cause analysis based on `#knowledge_base` and organizational frameworks.
+- RAG Search: AI searches `#knowledge_base` for relevant company policies and strategy documents (can be disabled per turn via `RAG_ENABLED=false` to stay within API free-tier limits).
+- Response Mode Selection: The employee selects one of two response modes per message via the UI:
+  * **Personal Advice**: Practical, empathetic immediate actions for the employee. Responds in the same language as the employee's message.
+  * **Structural Perspective**: Root cause analysis based on `#knowledge_base` and organizational frameworks. Responds in the same language as the employee's message.
+- The selected mode is sent to the API as `mode: "personal" | "structural"` and persisted per message in `#consultations.messages`.
 
-- Model Routing: The system routes tasks based on Risk (Severity) and Complexity (Intent) to optimize for both accuracy and API budget. By default, Gemini 2.0 Flash-Lite is used for all operations. The system switches to Claude 4.6 Sonnet only when the following specific conditions are met:
+- Model Routing: The system routes tasks based on Risk (Severity) and Complexity (Intent) to optimize for both accuracy and API budget. By default, Gemini 2.5 Flash-Lite is used for all operations. The system switches to Claude 4.6 Sonnet only when the following specific conditions are met:
   * High-Risk Analysis: When `#consultations.severity` is identified as 4 or higher.
   * Proposal Generation: When `#consultations.is_submitted` is True and the system generates the formal `#consultations.proposal`.
   * Advanced Strategic Analysis: During Top-down mode for complex hypothesis testing or policy drafting (Analytical Queries).
 
-  To minimize API overhead during building and testing, Gemini 2.0 Flash-Lite shall be used for ALL features. The routing logic to Claude should be implemented but toggled via environment variables only for the final deployment.
+  To minimize API overhead during building and testing, Gemini 2.5 Flash-Lite shall be used for ALL features. The routing logic to Claude should be implemented but toggled via environment variables only for the final deployment.
 
 4. Feedback:
 - Employee clicks "Like/Dislike" on the advice (Stored in `#consultations.feedback`).
@@ -91,11 +92,11 @@ Goal: Manage organizational context and translate employee feedback into strateg
 
 3. Trend Dashboard
 - Heatmap Visualization: A 2D matrix crossing `#consultations.category` and `#consultations.severity`. To detect departments or topics with rising tension (e.g., a spike in "High Severity" + "Interpersonal" in a specific team).
-- AI-Driven Executive Summary: Gemini 2.0 Flash-Lite scans recently metadata to generate a bulleted summary of emerging trends.
+- AI-Driven Executive Summary: Gemini 2.5 Flash-Lite scans recent metadata to generate a bulleted summary of emerging trends.
 
 4. Proposal Review:
 - Filter: Manager views only records where `#consultations.is_submitted` is True.
-- Strategic Analysis (Top-down Mode): Manager uses Claude 4.6 Sonnet (during building and testing, Gemini 2.0 Flash-Lite shall be used.) to analyze specific proposals or cross-reference multiple submissions to draft new company-wide policies.
+- Strategic Analysis (Top-down Mode): Manager uses Claude 4.6 Sonnet (during building and testing, Gemini 2.5 Flash-Lite shall be used.) to analyze specific proposals or cross-reference multiple submissions to draft new company-wide policies.
 - Response & Status: Manager can mark `#consultations.admin_status`.
 
 ## 5. Database Schema
@@ -124,5 +125,8 @@ consultations {
     text    user_name     Optional.
     text    user_email    Optional.
     text    admin_status  "New" (Default), "In Progress", "Resolved," or "Archived".
+    JSONB   messages      Conversation transcript. Array of {role, content, mode?}.
+                          role: "user" | "assistant"
+                          mode: "personal" | "structural" (present when set by user)
     timestamp created_at
 }
