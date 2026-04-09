@@ -7,6 +7,8 @@ Document lifecycle
 3. upsert_chunks() [existing]      → knowledge_base rows with document_id + version_id
 4. finalize_version()              → sets chunk_count, activates new version,
                                      deactivates old ones, updates current_version_id
+5. purge_old_versions()            → deletes versions beyond VERSION_RETENTION (default 3)
+                                     including their knowledge_base chunks
 """
 
 from __future__ import annotations
@@ -172,6 +174,54 @@ async def delete_version(conn: Connection, version_id: str) -> None:
         "DELETE FROM kb_document_versions WHERE id = $1::uuid",
         version_id,
     )
+
+
+# ── Version retention ──────────────────────────────────────────────────────────
+
+VERSION_RETENTION = 3  # keep the newest N versions (including the active one)
+
+
+async def purge_old_versions(
+    conn: Connection,
+    document_id: str,
+    keep: int = VERSION_RETENTION,
+) -> int:
+    """Delete versions (and their chunks) beyond the `keep` most recent.
+
+    Versions are ranked newest-first by version_no; the `keep` newest rows are
+    preserved regardless of is_active status.
+
+    knowledge_base rows must be deleted explicitly before the version rows
+    because the version_id FK is defined ON DELETE SET NULL (not CASCADE):
+    skipping this step would turn old chunks into orphan/legacy rows.
+
+    Returns the number of version rows deleted.
+    """
+    old_rows = await conn.fetch(
+        """
+        SELECT id::text
+        FROM kb_document_versions
+        WHERE document_id = $1::uuid
+        ORDER BY version_no DESC
+        OFFSET $2
+        """,
+        document_id,
+        keep,
+    )
+    if not old_rows:
+        return 0
+
+    old_ids = [r["id"] for r in old_rows]
+    async with conn.transaction():
+        await conn.execute(
+            "DELETE FROM knowledge_base WHERE version_id = ANY($1::uuid[])",
+            old_ids,
+        )
+        await conn.execute(
+            "DELETE FROM kb_document_versions WHERE id = ANY($1::uuid[])",
+            old_ids,
+        )
+    return len(old_ids)
 
 
 async def list_chunks_for_version(conn: Connection, version_id: str) -> list[dict]:

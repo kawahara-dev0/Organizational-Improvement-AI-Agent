@@ -5,6 +5,7 @@
 
 **Core Value**: 
 - **Anonymity First**: Protects employees while extracting structural insights through non-PII metadata collection.
+- **Data handling**: Chat text sent to the LLM is passed through **PII masking** (e.g. email / phone patterns → placeholders) to reduce accidental leakage. Optional **Fernet encryption at rest** for `consultations.messages` (`MESSAGES_ENCRYPTION_KEY`) so DB inspection does not expose plaintext transcripts; optional **retention deletion** for non-submitted sessions (`CONSULTATION_RETENTION_DAYS`). Third-party model providers’ training / logging policies are outside this app — configure keys and vendor terms accordingly.
 - **AI Reasoning**: Uses a "Model Router" to switch between logical analysis (Claude) and fast processing (Gemini) based on task complexity.
 - **Actionable Output**: Reframes emotional complaints into professional management proposals with priority scores.
 
@@ -39,11 +40,13 @@ Goal: Provide immediate value to the employee while capturing anonymized data fo
 - Dynamic Updates: As the conversation progresses, the AI periodically refreshes these fields (every N assistant turns, configurable via `METADATA_EXTRACTION_INTERVAL`).
 
 3. Contextual Analysis (LLM + RAG):
-- RAG Search: AI searches `#knowledge_base` for relevant company policies and strategy documents (can be disabled per turn via `RAG_ENABLED=false` to stay within API free-tier limits).
+- RAG Search: AI searches `#knowledge_base` for relevant company policies and strategy documents (can be disabled per turn via `RAG_ENABLED=false` to stay within API free-tier limits). Retrieval uses only chunks tied to an **active document version** (`kb_document_versions.is_active = TRUE`); legacy rows without a version are excluded from search.
+- **Source citations**: The API returns a structured `sources` list (document title, primary page from highest similarity, optional “Also referenced” supplementary pages) so the UI can show references alongside inline `[1]`, `[2]` markers in the assistant reply.
 - Response Mode Selection: The employee selects one of two response modes per message via the UI:
   * **Personal Advice**: Practical, empathetic immediate actions for the employee. Responds in the same language as the employee's message.
   * **Structural Perspective**: Root cause analysis based on `#knowledge_base` and organizational frameworks. Responds in the same language as the employee's message.
 - The selected mode is sent to the API as `mode: "personal" | "structural"` and persisted per message in `#consultations.messages`.
+- **PII masking** is applied to message content **before** it is sent to the LLM for chat and proposal-draft generation (not a substitute for user discipline; names/addresses in free text may still require broader patterns or manual review).
 
 - Model Routing: The system routes tasks based on Risk (Severity) and Complexity (Intent) to optimize for both accuracy and API budget. By default, Gemini 2.5 Flash-Lite is used for all operations. The system switches to Claude 4.6 Sonnet only when the following specific conditions are met:
   * High-Risk Analysis: When `#consultations.severity` is identified as 4 or higher.
@@ -64,7 +67,8 @@ Prerequisite: Triggered following UC-1 to convert private chat context into a fo
 
 2. Interactive Review & Professional Reframing:
 - AI (Claude 4.6 Sonnet) synthesizes the session into a formal draft (Summary & Structural Proposal).
-- Anonymization: AI automatically detects and redacts/generalizes specific names or PII within the text.
+- **Contact fields** (`user_name`, `user_email`) are collected only for submission and manager follow-up; they are **not** included in the LLM prompt for draft generation.
+- Anonymization: AI automatically detects and redacts/generalizes specific names or PII within the text; the transcript passed to the model is also **PII-masked** at the API layer where patterns apply.
 - Reframing: AI converts emotional/accusatory language into objective, professional business language.
 - The draft is displayed in a **dedicated right panel** (always visible alongside the chat). The panel
   shows a placeholder message until a draft is generated.
@@ -95,15 +99,17 @@ Goal: Manage organizational context and translate employee feedback into strateg
 
 1. Knowledge Base Management (RAG Context)
 - Upload & Sync: Manager uploads files (PDF/Excel/Docx) such as Employee Handbooks, Internal Policies, or Quarterly Goals.
-- Processing: The system automatically chunks the text and updates `#knowledge_base` via the embedding model.
-- CRUD Operations: Manager can review, update, or delete existing knowledge chunks to ensure AI responses remain accurate and compliant.
+- **Document-centric model**: Each logical document lives in `#kb_documents` with one or more file versions in `#kb_document_versions`; chunks in `#knowledge_base` reference `document_id` and `version_id`. Only the **active** version is used for retrieval; uploading a new version supersedes the previous one for search.
+- Processing: The system chunks text and writes embeddings into `#knowledge_base` linked to the active version.
+- **Version retention**: A maximum of **3 versions** (newest-first) are kept per document. When a new version is finalized, versions beyond the 3rd oldest are automatically deleted together with their `#knowledge_base` chunks. Chunks are deleted explicitly before the version row to prevent them from becoming orphan/legacy rows (the FK is `ON DELETE SET NULL`, not `CASCADE`).
+- **No direct chunk editing** in the admin UI; accuracy is maintained by uploading a corrected file version. An admin tool may report and delete **legacy/orphan chunks** (`version_id` NULL) left from older ingestion paths.
 
 2. Department Structure Management
 - Registry: Manager defines the list of valid `#department` (e.g., Sales, Engineering, HR). These values populate the dropdown in UC-1.
 
 3. Trend Dashboard
-- Heatmap Visualization: A 2D matrix crossing `#consultations.category` and `#consultations.severity`. To detect departments or topics with rising tension (e.g., a spike in "High Severity" + "Interpersonal" in a specific team).
-- AI-Driven Executive Summary: Gemini 2.5 Flash-Lite scans recent metadata to generate a bulleted summary of emerging trends.
+- Heatmap Visualization: A 2D matrix crossing `#consultations.category` and `#consultations.severity`. To detect departments or topics with rising tension (e.g., a spike in "High Severity" + "Interpersonal" in a specific team). Optional filters: **department**, **date range** (`date_from` / `date_to`).
+- AI-Driven Executive Summary: Gemini 2.5 Flash-Lite scans aggregated trend rows (respecting the same filters) to generate a management brief; output language can be selected.
 
 4. Proposal Review:
 - Filter: Manager views only records where `#consultations.is_submitted` is True.
@@ -115,7 +121,27 @@ knowledge_base {
     UUID    id            Primary Key.
     text    content       Chunked text content from uploaded documents.
     VECTOR  embedding     Vector data (e.g., 768 dimensions for Gemini Embedding).
-    JSONB   metadata	    Source file name, page numbers, category, etc.
+    JSONB   metadata	    Source file name, page numbers, category, chunk_index, etc.
+    UUID    document_id   Optional FK → kb_documents (set for versioned uploads).
+    UUID    version_id    Optional FK → kb_document_versions (retrieval requires active version).
+}
+
+kb_documents {
+    UUID    id                  Primary Key.
+    text    title               Logical document title (shown in citations).
+    text    category            Optional grouping.
+    UUID    current_version_id  FK → kb_document_versions (active file version).
+    timestamp created_at, updated_at
+}
+
+kb_document_versions {
+    UUID    id           Primary Key.
+    UUID    document_id  FK → kb_documents.
+    int     version_no   1-based per document.
+    text    source_file  Original filename.
+    bool    is_active    Only active version’s chunks participate in RAG.
+    int     chunk_count  Filled after embedding pipeline.
+    timestamp created_at
 }
 
 departments {
@@ -135,9 +161,10 @@ consultations {
     text    proposal      Auto-generated by AI on submission.
     text    user_name     Optional.
     text    user_email    Optional.
-    text    admin_status  "New" (Default), "In Progress", "Resolved," or "Archived".
-    JSONB   messages      Conversation transcript. Array of {role, content, mode?}.
-                          role: "user" | "assistant"
-                          mode: "personal" | "structural" (present when set by user)
+    text    admin_status  "New" (Default), "In Progress", "Resolved", or "Archived".
+    JSONB   messages      Conversation transcript. Application layer: normally a JSON array of
+                          {role, content, mode?} (role: "user" | "assistant"; mode on assistant
+                          when set). When encryption is enabled, stored value may be a JSON string
+                          containing ciphertext (prefix `enc:v1:`) — decrypted on read by the API.
     timestamp created_at
 }

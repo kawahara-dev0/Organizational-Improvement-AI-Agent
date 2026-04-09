@@ -2,10 +2,18 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
+type SourceRef = {
+  index: number;
+  title: string;
+  primary_page?: number | null;
+  supplementary_pages?: number[];
+};
+
 type Message = {
   role: "user" | "assistant";
   content: string;
   mode?: ResponseMode;
+  sources?: SourceRef[];
 };
 
 type ResponseMode = "personal" | "structural";
@@ -171,10 +179,19 @@ export default function Home() {
         throw new Error(detail);
       }
 
-      const data = (await response.json()) as { reply: string; mode: ResponseMode };
+      const data = (await response.json()) as {
+        reply: string;
+        mode: ResponseMode;
+        sources?: SourceRef[];
+      };
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: data.reply, mode: data.mode },
+        {
+          role: "assistant",
+          content: data.reply,
+          mode: data.mode,
+          sources: data.sources ?? [],
+        },
       ]);
     } catch (e) {
       setMessages((prev) => prev.slice(0, -1));
@@ -374,8 +391,8 @@ export default function Home() {
                 className="min-w-[10rem] rounded border border-white/20 bg-zinc-800 px-2 py-1 text-xs text-white focus:border-white/40 focus:outline-none disabled:opacity-40"
               >
                 <option value="auto">Auto (match conversation)</option>
-                <option value="ja">日本語</option>
                 <option value="en">English</option>
+                <option value="ja">日本語</option>
               </select>
             </div>
           </div>
@@ -416,6 +433,36 @@ export default function Home() {
                     </div>
                   )}
                   {m.content}
+                  {/* Source footnotes — only when RAG returned references */}
+                  {m.role === "assistant" &&
+                    m.sources &&
+                    m.sources.length > 0 && (
+                      <div className="mt-2 border-t border-white/10 pt-2 text-xs text-white/50">
+                        <span className="mb-1 block text-white/30">
+                          References
+                        </span>
+                        {m.sources.map((s) => (
+                          <div key={s.index} className="mt-0.5">
+                            <span className="text-white/40">[{s.index}]</span>{" "}
+                            <span className="text-white/70">{s.title}</span>
+                            {s.primary_page != null && (
+                              <span className="ml-1 text-white/60">
+                                p.{s.primary_page}
+                              </span>
+                            )}
+                            {s.supplementary_pages &&
+                              s.supplementary_pages.length > 0 && (
+                                <span className="ml-2 text-white/35">
+                                  Also referenced:{" "}
+                                  {s.supplementary_pages
+                                    .map((p) => `p.${String(p)}`)
+                                    .join(", ")}
+                                </span>
+                              )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                 </div>
               ))
             )}

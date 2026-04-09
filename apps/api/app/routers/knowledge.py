@@ -243,6 +243,15 @@ async def upload_new_version(
 
     await doc_repo.finalize_version(conn, document_id, version_id, chunk_count)
 
+    purged = await doc_repo.purge_old_versions(conn, document_id)
+    if purged:
+        logger.info(
+            "Purged %d old version(s) for document %s (keeping %d)",
+            purged,
+            document_id,
+            doc_repo.VERSION_RETENTION,
+        )
+
     logger.info("New version v%d for document %s — %d chunks", version_no, document_id, chunk_count)
     return {
         "document_id": document_id,
@@ -264,3 +273,31 @@ async def delete_document(
     deleted = await doc_repo.archive_document(conn, document_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Document not found.")
+
+
+# ── Orphan / legacy chunks ─────────────────────────────────────────────────
+
+
+@router.get("/orphan-chunks")
+async def get_orphan_chunks(conn: Connection = Depends(get_conn)) -> dict:
+    """Return count of legacy chunks (version_id IS NULL) that are excluded from RAG.
+
+    These were uploaded before the document management system was introduced.
+    They are no longer used for retrieval and can be safely deleted.
+    """
+    row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM knowledge_base WHERE version_id IS NULL")
+    return {"count": row["cnt"]}
+
+
+@router.delete("/orphan-chunks", status_code=200)
+async def delete_orphan_chunks(conn: Connection = Depends(get_conn)) -> dict:
+    """Delete all legacy chunks (version_id IS NULL).
+
+    These chunks are not used for RAG retrieval.  Deleting them frees storage
+    and avoids confusion.  Re-upload the source documents through the
+    Knowledge Base admin UI to restore their content.
+    """
+    result = await conn.execute("DELETE FROM knowledge_base WHERE version_id IS NULL")
+    deleted = int(result.split()[-1])
+    logger.info("Deleted %d orphan/legacy chunks", deleted)
+    return {"deleted": deleted}

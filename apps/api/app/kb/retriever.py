@@ -36,10 +36,11 @@ async def retrieve(
     vector_str = "[" + ",".join(str(v) for v in vector) + "]"
 
     # Build WHERE clauses.
-    # Always restrict to chunks from active document versions (if version data
-    # is present). Legacy chunks (version_id IS NULL) are included as well so
-    # that data uploaded before Migration 003 keeps working.
-    conditions: list[str] = ["(kb.version_id IS NULL OR v.is_active = TRUE)"]
+    # Only return chunks from active document versions.
+    # Chunks with version_id IS NULL (uploaded before the document management
+    # system was introduced) are intentionally excluded — they should be
+    # re-uploaded through the Knowledge Base admin UI.
+    conditions: list[str] = ["v.is_active = TRUE"]
     params: list = [vector_str, top_k]
 
     if source_file is not None:
@@ -57,9 +58,11 @@ async def retrieve(
             kb.id,
             kb.content,
             kb.metadata,
-            1 - (kb.embedding <=> $1::vector) AS similarity
+            1 - (kb.embedding <=> $1::vector) AS similarity,
+            d.title AS document_title
         FROM knowledge_base kb
         LEFT JOIN kb_document_versions v ON v.id = kb.version_id
+        LEFT JOIN kb_documents d ON d.id = v.document_id
         {where_clause}
         ORDER BY kb.embedding <=> $1::vector
         LIMIT $2
@@ -78,6 +81,7 @@ async def retrieve(
                 "content": row["content"],
                 "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
                 "similarity": float(row["similarity"]),
+                "document_title": row["document_title"],
             }
         )
 
@@ -97,7 +101,48 @@ def format_context(chunks: list[dict]) -> str:
     parts = []
     for i, chunk in enumerate(chunks, start=1):
         meta = chunk.get("metadata", {})
-        source = meta.get("source_file", "unknown")
+        title = chunk.get("document_title") or meta.get("source_file", "unknown")
         page = meta.get("page_number", "?")
-        parts.append(f"[{i}] (source: {source}, page: {page})\n{chunk['content']}")
+        parts.append(f"[{i}] (source: {title}, page: {page})\n{chunk['content']}")
     return "\n\n".join(parts)
+
+
+def build_sources(chunks: list[dict]) -> list[dict]:
+    """Return document-grouped source references for the UI footnotes.
+
+    Chunks are already ordered by similarity (highest first from SQL).
+    Within each document group the first-seen chunk becomes the primary
+    reference (highest relevance); remaining pages are supplementary.
+
+    Each item:
+        {
+            "index": N,
+            "title": str,
+            "primary_page": int | None,
+            "supplementary_pages": [int, ...]   # sorted ascending
+        }
+    """
+    # Ordered dict: title → {primary_page, all_pages}
+    groups: dict[str, dict] = {}
+    for chunk in chunks:
+        meta = chunk.get("metadata", {})
+        title = chunk.get("document_title") or meta.get("source_file", "unknown")
+        page = meta.get("page_number")
+        if title not in groups:
+            groups[title] = {"primary_page": page, "all_pages": set()}
+        if page is not None:
+            groups[title]["all_pages"].add(page)
+
+    sources: list[dict] = []
+    for i, (title, info) in enumerate(groups.items(), start=1):
+        primary = info["primary_page"]
+        supp = sorted(p for p in info["all_pages"] if p != primary)
+        sources.append(
+            {
+                "index": i,
+                "title": title,
+                "primary_page": primary,
+                "supplementary_pages": supp,
+            }
+        )
+    return sources

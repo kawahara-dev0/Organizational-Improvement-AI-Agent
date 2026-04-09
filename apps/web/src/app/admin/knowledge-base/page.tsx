@@ -419,6 +419,11 @@ export default function KnowledgeBasePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // orphan chunks
+  const [orphanCount, setOrphanCount] = useState<number | null>(null);
+  const [cleaningOrphans, setCleaningOrphans] = useState(false);
+  const [orphanMsg, setOrphanMsg] = useState<string | null>(null);
+
   // create document form
   const [showCreate, setShowCreate] = useState(false);
   const [createTitle, setCreateTitle] = useState("");
@@ -432,20 +437,52 @@ export default function KnowledgeBasePage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/knowledge/documents`, {
-        headers: { Authorization: `Bearer ${token()}` },
-      });
-      if (!res.ok) {
-        setError(`Failed to load documents (${res.status}).`);
+      const [docsRes, orphanRes] = await Promise.all([
+        fetch(`${API_URL}/knowledge/documents`, {
+          headers: { Authorization: `Bearer ${token()}` },
+        }),
+        fetch(`${API_URL}/knowledge/orphan-chunks`, {
+          headers: { Authorization: `Bearer ${token()}` },
+        }),
+      ]);
+      if (!docsRes.ok) {
+        setError(`Failed to load documents (${docsRes.status}).`);
         return;
       }
-      setDocuments((await res.json()) as Document[]);
+      setDocuments((await docsRes.json()) as Document[]);
+      if (orphanRes.ok) {
+        const od = (await orphanRes.json()) as { count: number };
+        setOrphanCount(od.count);
+      }
     } catch {
       setError("Network error.");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const handleCleanOrphans = async () => {
+    if (!confirm(`Delete ${String(orphanCount)} legacy chunks? This cannot be undone.`)) return;
+    setCleaningOrphans(true);
+    setOrphanMsg(null);
+    try {
+      const res = await fetch(`${API_URL}/knowledge/orphan-chunks`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (!res.ok) {
+        setOrphanMsg("Failed to delete legacy chunks.");
+        return;
+      }
+      const d = (await res.json()) as { deleted: number };
+      setOrphanCount(0);
+      setOrphanMsg(`Deleted ${String(d.deleted)} legacy chunks.`);
+    } catch {
+      setOrphanMsg("Network error.");
+    } finally {
+      setCleaningOrphans(false);
+    }
+  };
 
   useEffect(() => {
     void fetchDocuments();
@@ -580,6 +617,39 @@ export default function KnowledgeBasePage() {
             </button>
           </div>
         </form>
+      )}
+
+      {/* Orphan / legacy chunk warning */}
+      {orphanCount !== null && orphanCount > 0 && (
+        <div className="flex max-w-xl flex-col gap-2 rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-4">
+          <p className="text-sm font-medium text-yellow-300">
+            ⚠ {orphanCount} legacy chunk{orphanCount !== 1 ? "s" : ""} detected
+          </p>
+          <p className="text-xs text-yellow-200/70">
+            These chunks were uploaded before the document management system was
+            introduced. They are{" "}
+            <strong>no longer used for RAG retrieval</strong> and can be safely
+            removed. Re-upload the source files through{" "}
+            <em>+ New Document</em> if needed.
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => void handleCleanOrphans()}
+              disabled={cleaningOrphans}
+              className="rounded bg-yellow-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-yellow-500 disabled:opacity-50"
+            >
+              {cleaningOrphans ? "Deleting…" : "Delete Legacy Chunks"}
+            </button>
+            {orphanMsg && (
+              <span className="text-xs text-yellow-300">{orphanMsg}</span>
+            )}
+          </div>
+        </div>
+      )}
+      {orphanCount === 0 && orphanMsg && (
+        <p className="max-w-xl rounded border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-300">
+          {orphanMsg}
+        </p>
       )}
 
       {createMsg && (

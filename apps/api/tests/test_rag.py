@@ -25,7 +25,7 @@ from app.ai.prompts import (
     build_proposal_messages,
     build_rag_system_prompt,
 )
-from app.kb.retriever import format_context, retrieve
+from app.kb.retriever import build_sources, format_context, retrieve
 
 DIMS = 768
 
@@ -56,18 +56,60 @@ async def _insert_chunk(
     vector: list[float],
     metadata: dict,
 ) -> str:
-    """Insert a single chunk row directly with a pre-computed vector."""
+    """Insert a single chunk row directly with a pre-computed vector.
+
+    Since retrieval now only returns chunks from active document versions,
+    this helper also creates a minimal kb_documents/kb_document_versions pair
+    and links the inserted chunk to that active version.
+    """
     row_id = str(uuid.uuid4())
+    doc_id = str(uuid.uuid4())
+    version_id = str(uuid.uuid4())
+    title = metadata.get("document_title") or metadata.get("source_file") or "Test Doc"
+    source_file = metadata.get("source_file") or "test.pdf"
+
+    # Create document + active version rows required by retriever filter.
+    await conn.execute(
+        """
+        INSERT INTO kb_documents (id, title, category)
+        VALUES ($1::uuid, $2, '')
+        """,
+        doc_id,
+        title,
+    )
+    await conn.execute(
+        """
+        INSERT INTO kb_document_versions
+            (id, document_id, version_no, source_file, is_active, chunk_count)
+        VALUES
+            ($1::uuid, $2::uuid, 1, $3, TRUE, 1)
+        """,
+        version_id,
+        doc_id,
+        source_file,
+    )
+    await conn.execute(
+        """
+        UPDATE kb_documents
+           SET current_version_id = $1::uuid
+         WHERE id = $2::uuid
+        """,
+        version_id,
+        doc_id,
+    )
+
     vector_str = "[" + ",".join(str(v) for v in vector) + "]"
     await conn.execute(
         """
-        INSERT INTO knowledge_base (id, content, embedding, metadata)
-        VALUES ($1, $2, $3::vector, $4::jsonb)
+        INSERT INTO knowledge_base (id, content, embedding, metadata, document_id, version_id)
+        VALUES ($1, $2, $3::vector, $4::jsonb, $5::uuid, $6::uuid)
         """,
         row_id,
         content,
         vector_str,
         json.dumps(metadata),
+        doc_id,
+        version_id,
     )
     return row_id
 
@@ -121,9 +163,10 @@ async def test_retrieve_top_k_limits_results(db_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_retrieve_empty_db_returns_empty_list(db_conn) -> None:
-    """retrieve() on an empty table should return an empty list, not raise."""
+    """retrieve() with a non-existent source_file should return an empty list."""
+    src = f"{_TEST_SRC}_empty"
     with patch("app.kb.retriever.embed_query", new=AsyncMock(return_value=QUERY_LIKE_A)):
-        results = await retrieve(db_conn, query="anything", top_k=5)
+        results = await retrieve(db_conn, query="anything", top_k=5, source_file=src)
 
     assert results == []
 
@@ -203,6 +246,31 @@ def test_format_context_produces_numbered_list() -> None:
 
 def test_format_context_empty_list() -> None:
     assert format_context([]) == ""
+
+
+def test_build_sources_groups_pages_by_document_title() -> None:
+    chunks = [
+        {
+            "metadata": {"source_file": "employment-v2.pdf", "page_number": 18},
+            "document_title": "就業規則",
+            "similarity": 0.95,
+        },
+        {
+            "metadata": {"source_file": "employment-v2.pdf", "page_number": 6},
+            "document_title": "就業規則",
+            "similarity": 0.81,
+        },
+        {
+            "metadata": {"source_file": "employment-v2.pdf", "page_number": 86},
+            "document_title": "就業規則",
+            "similarity": 0.75,
+        },
+    ]
+    sources = build_sources(chunks)
+    assert len(sources) == 1
+    assert sources[0]["title"] == "就業規則"
+    assert sources[0]["primary_page"] == 18
+    assert sources[0]["supplementary_pages"] == [6, 86]
 
 
 # ── Prompt builders ────────────────────────────────────────────────────────────

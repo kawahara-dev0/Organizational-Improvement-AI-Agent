@@ -7,6 +7,8 @@ import uuid
 
 from asyncpg import Connection
 
+from app.utils.crypto import decrypt_messages, encrypt_messages, is_encryption_enabled
+
 
 async def create_consultation(
     conn: Connection,
@@ -38,7 +40,11 @@ async def get_consultation(conn: Connection, consultation_id: str) -> dict | Non
     if not row:
         return None
     data = dict(row)
-    data["messages"] = json.loads(data["messages"]) if data["messages"] else []
+    # messages is stored as JSONB; asyncpg returns it as a JSON string.
+    # decrypt_messages handles encrypted ("enc:v1:…"), plain string, and
+    # legacy list values transparently.
+    raw = json.loads(data["messages"]) if data["messages"] else []
+    data["messages"] = decrypt_messages(raw)
     data["id"] = str(data["id"])
     return data
 
@@ -54,20 +60,38 @@ async def append_message(
 
     The mode field (personal | structural) is stored on assistant messages
     so the UI can restore mode badges when reloading the session.
+
+    When encryption is enabled, the whole messages array is re-encrypted
+    on each write (read-modify-write).  Without encryption, the original
+    fast JSONB concatenation is used.
     """
     msg: dict = {"role": role, "content": content}
     if mode is not None:
         msg["mode"] = mode
-    message = json.dumps(msg)
-    await conn.execute(
-        """
-        UPDATE consultations
-        SET messages = messages || $1::jsonb
-        WHERE id = $2
-        """,
-        f"[{message}]",
-        consultation_id,
-    )
+
+    if is_encryption_enabled():
+        # Read current messages, append, encrypt, write back.
+        session = await get_consultation(conn, consultation_id)
+        messages = session["messages"] if session else []
+        messages.append(msg)
+        encrypted_str = encrypt_messages(messages)
+        # Store as a JSONB string value: json.dumps wraps in double-quotes.
+        await conn.execute(
+            "UPDATE consultations SET messages = $1::jsonb WHERE id = $2",
+            json.dumps(encrypted_str),
+            consultation_id,
+        )
+    else:
+        # Fast path: native JSONB concatenation.
+        await conn.execute(
+            """
+            UPDATE consultations
+            SET messages = messages || $1::jsonb
+            WHERE id = $2
+            """,
+            f"[{json.dumps(msg)}]",
+            consultation_id,
+        )
 
 
 async def update_metadata(

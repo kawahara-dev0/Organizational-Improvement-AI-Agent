@@ -43,8 +43,9 @@ from app.consultations.repository import (
     update_metadata,
 )
 from app.db.session import get_conn
-from app.kb.retriever import format_context, retrieve
+from app.kb.retriever import build_sources, format_context, retrieve
 from app.settings import settings
+from app.utils.pii import mask_pii
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +70,19 @@ class ChatRequest(BaseModel):
     mode: ResponseMode = "personal"
 
 
+class SourceRef(BaseModel):
+    index: int
+    title: str
+    primary_page: int | None = None
+    supplementary_pages: list[int] = []
+
+
 class ChatResponse(BaseModel):
     consultation_id: str
     reply: str
     provider_used: str
     mode: ResponseMode
+    sources: list[SourceRef] = []
 
 
 class FeedbackRequest(BaseModel):
@@ -255,19 +264,26 @@ async def chat(
 
     # 2. RAG retrieval (optional — skip to save 1 embed call/turn)
     context_text = ""
+    retrieved_chunks: list[dict] = []
     if settings.rag_enabled:
         try:
-            retrieved = await retrieve(conn, query=body.content, top_k=5)
-            context_text = format_context(retrieved)
+            retrieved_chunks = await retrieve(conn, query=body.content, top_k=5)
+            context_text = format_context(retrieved_chunks)
         except Exception as exc:  # noqa: BLE001
             if _is_quota_error(exc):
                 logger.warning("RAG embed quota exceeded — proceeding without context")
             else:
                 logger.warning("RAG retrieval failed — proceeding without context: %s", exc)
 
-    # 3. Build LLM request with history + RAG context
-    existing_messages = _messages_to_lc(session["messages"])
-    existing_messages.append(ChatMessage(role="user", content=body.content))
+    # 3. Build LLM request with history + RAG context.
+    # PII is masked in the copy sent to the external LLM; the DB retains the
+    # original text (which is encrypted at rest when MESSAGES_ENCRYPTION_KEY
+    # is configured).
+    def _masked(msg: dict) -> dict:
+        return {**msg, "content": mask_pii(msg["content"])}
+
+    existing_messages = _messages_to_lc([_masked(m) for m in session["messages"]])
+    existing_messages.append(ChatMessage(role="user", content=mask_pii(body.content)))
 
     system_prompt = build_rag_system_prompt(context_text, mode=body.mode)
     severity = session.get("severity") or 0
@@ -300,11 +316,14 @@ async def chat(
     if updated_session and _should_extract_metadata(updated_session["messages"]):
         await _extract_and_persist_metadata(conn, consultation_id, updated_session["messages"])
 
+    sources = [SourceRef(**s) for s in build_sources(retrieved_chunks)]
+
     return ChatResponse(
         consultation_id=consultation_id,
         reply=response.content,
         provider_used=response.provider_used.value,
         mode=body.mode,
+        sources=sources,
     )
 
 
@@ -403,7 +422,8 @@ async def _build_proposal_draft(
     Does NOT write anything to the DB — caller decides whether to persist.
     """
     messages = session.get("messages") or []
-    transcript = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
+    # Mask PII before sending the transcript to the external LLM.
+    transcript = "\n".join(f"{m['role'].capitalize()}: {mask_pii(m['content'])}" for m in messages)
 
     context_text = ""
     if settings.rag_enabled:

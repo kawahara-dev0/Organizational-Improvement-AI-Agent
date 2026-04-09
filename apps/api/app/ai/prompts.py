@@ -3,6 +3,7 @@
 Response mode (selected by the user in the UI):
   - "personal"    → Personal Advice only   — empathetic, practical actions
   - "structural"  → Structural Perspective only — root-cause analysis grounded in KB
+  - "analytical"  → Admin analytical mode — cross-proposal pattern synthesis
 """
 
 from __future__ import annotations
@@ -147,6 +148,98 @@ Company context (from knowledge base):
 
 Generate the formal improvement proposal now.
 """
+
+
+# ── Trends summary prompt ─────────────────────────────────────────────────────
+
+_TRENDS_SUMMARY_LANG_EN = "Write the entire brief in English."
+_TRENDS_SUMMARY_LANG_JA = (
+    "Write the entire brief in Japanese. Do not use English except for unavoidable proper nouns."
+)
+
+TRENDS_SUMMARY_SYSTEM = """\
+You are an organizational analyst AI assisting HR and management.
+You will be given aggregated metadata about recent employee consultations
+(category, department, severity, count).
+
+{language_instruction}
+
+Write a concise executive brief with:
+- 3-5 bullet points highlighting the most important patterns, risks, or
+  recommendations visible in the data.
+- Keep each bullet to 1-2 sentences.
+- Use neutral, professional language suitable for a management audience.
+- Do NOT reference specific individuals.
+- Do NOT include section headings or a document title.
+"""
+
+TRENDS_SUMMARY_USER = """\
+Aggregated consultation data (JSON):
+{data}
+
+Generate the management brief now.
+"""
+
+
+def build_trends_summary_messages(data: str, *, language: str = "en") -> tuple[str, str]:
+    """Return (system_prompt, user_message) for the trends summary call."""
+    lang_instruction = _TRENDS_SUMMARY_LANG_JA if language == "ja" else _TRENDS_SUMMARY_LANG_EN
+    system = TRENDS_SUMMARY_SYSTEM.format(language_instruction=lang_instruction)
+    return (system, TRENDS_SUMMARY_USER.format(data=data))
+
+
+# ── Analytical (admin) mode prompt ────────────────────────────────────────────
+
+_ANALYTICAL_LANG_EN = "Output language: English. Write the entire draft in English."
+_ANALYTICAL_LANG_JA = (
+    "Output language: Japanese. Write the entire draft — including all section "
+    "headings — in Japanese. Do not use English except for unavoidable proper nouns."
+)
+_ANALYTICAL_HEADINGS_EN = (
+    "### Situation Overview\n   ### Identified Patterns\n   ### Recommended Policy Actions"
+)
+_ANALYTICAL_HEADINGS_JA = "### 状況概要\n   ### 共通パターン\n   ### 推奨施策"
+
+ANALYTICAL_SYSTEM_TEMPLATE = """\
+You are a senior organizational strategist AI.
+You have been given summaries of multiple employee improvement proposals submitted
+to management.  Your task is to synthesise them into a single strategic policy
+draft suitable for an executive leadership review.
+
+{language_instruction}
+
+Rules:
+1. Identify cross-cutting themes and root causes that appear in multiple proposals.
+2. Anonymise all individual references.
+3. Use EXACTLY the following structure with these exact headings:
+   {headings}
+4. The first section is ONE paragraph.
+5. The other sections may use bullet points or numbered lists.
+6. Do NOT include an overall document title or header.
+"""
+
+ANALYTICAL_USER = """\
+Proposal summaries ({count} proposals):
+{summaries}
+
+Generate the strategic policy draft now.
+"""
+
+
+def build_analytical_messages(
+    summaries: str, count: int, *, language: str = "en"
+) -> tuple[str, str]:
+    """Return (system_prompt, user_message) for the analytical policy draft."""
+    if language == "ja":
+        lang_instruction = _ANALYTICAL_LANG_JA
+        headings = _ANALYTICAL_HEADINGS_JA
+    else:
+        lang_instruction = _ANALYTICAL_LANG_EN
+        headings = _ANALYTICAL_HEADINGS_EN
+    system = ANALYTICAL_SYSTEM_TEMPLATE.format(
+        language_instruction=lang_instruction, headings=headings
+    )
+    return (system, ANALYTICAL_USER.format(summaries=summaries, count=count))
 
 
 def build_proposal_messages(

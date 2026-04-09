@@ -6,9 +6,9 @@ import { useEffect, useState } from "react";
 
 const NAV_ITEMS = [
   { href: "/admin/proposals", label: "Proposals" },
-  { href: "/admin/departments", label: "Departments" },
-  { href: "/admin/knowledge-base", label: "Knowledge Base" },
   { href: "/admin/trends", label: "Trends" },
+  { href: "/admin/knowledge-base", label: "Knowledge Base" },
+  { href: "/admin/departments", label: "Departments" },
 ] as const;
 
 export default function AdminLayout({

@@ -79,8 +79,9 @@
 
 - File parsers (PDF/Excel/DOCX) and chunking strategy (with metadata: source file, page).
 - Embedding pipeline using the same model as query-time RAG.
-- Admin-only API routes: upload, list chunks, update, delete.
-- **Verify:** Upload a sample PDF via `curl` against the running `api` container; confirm the chunk and vector appear in the `db` container.
+- Admin-only API routes: ingest files into **`kb_documents` / `kb_document_versions`** with chunks in `knowledge_base` linked by `document_id` / `version_id` (active version only for RAG). Prefer **re-upload / new version** over editing individual chunks in the UI.
+- **Version retention**: after each successful upload, automatically purge versions (and their chunks) beyond the newest **3** per document (`VERSION_RETENTION = 3` in `doc_repository.py`). Chunks must be deleted before the version row to avoid orphan rows; run `pytest tests/test_knowledge.py` to verify.
+- **Verify:** Upload a sample PDF via the admin UI or `curl`; confirm document, version, and chunks exist in the `db` container.
 
 ---
 
@@ -90,9 +91,10 @@
 
 **Deliverables:**
 
-- Vector search over `knowledge_base` with metadata filters if needed.
+- Vector search over `knowledge_base` with metadata filters if needed; exclude chunks that are not tied to an **active** `kb_document_versions` row (and exclude legacy rows without `version_id` once migration is complete).
+- **Source references** for the UI: build a grouped list (document title, primary page, supplementary pages) from retrieved chunks so citations match inline `[n]` markers in the assistant text.
 - Separate prompt templates for **"Personal Advice"** (empathetic, employee-focused) and **"Structural Perspective"** (systemic, management-focused). Both templates instruct the AI to reply in the same language as the user's message and to omit markdown headings from the response.
-- Integration tests against a small fixture index.
+- Integration tests against a small fixture index (including source-grouping behaviour).
 - **Verify:** `docker compose run --rm api pytest tests/test_rag.py` passes against the local `db` container.
 
 ---
@@ -105,11 +107,12 @@
 
 - `POST /consultations` — create a new session row.
 - `GET /consultations/{id}` — retrieve session state including full message history.
-- `POST /consultations/{id}/chat` — accept `{ content, mode }` where `mode` is `"personal"` or `"structural"`. Appends user and assistant messages (with `mode`) to the `messages` JSONB column. Calls RAG retrieval (conditional on `RAG_ENABLED`) and selects the prompt template matching the requested mode.
+- `POST /consultations/{id}/chat` — accept `{ content, mode }` where `mode` is `"personal"` or `"structural"`. Appends user and assistant messages (with `mode`) to the `messages` JSONB column. Calls RAG retrieval (conditional on `RAG_ENABLED`) and selects the prompt template matching the requested mode. Apply **PII masking** to conversation text **before** calling the LLM; return **`sources`** (grouped citations) in the JSON response for the client.
 - After the **first** assistant turn, and then every `METADATA_EXTRACTION_INTERVAL` turns: call **Gemini** metadata extractor to refresh `department`, `category`, `severity` (0–5).
 - `POST /consultations/{id}/feedback` — record Like/Dislike.
 - Free-tier controls: `RAG_ENABLED` and `METADATA_EXTRACTION_INTERVAL` env flags; Gemini 429 errors are caught and surfaced as HTTP 503 with a user-friendly message.
-- **Verify:** `docker compose up` and send a test chat message via `curl`; confirm `consultations` row is created in the `db` container with `messages` array populated and AI-extracted metadata.
+- Optional (privacy hardening): **Fernet encryption** for `messages` at rest (`MESSAGES_ENCRYPTION_KEY`); **retention** worker to delete old non-submitted consultations (`CONSULTATION_RETENTION_DAYS`). Document in `.env.example`.
+- **Verify:** `docker compose up` and send a test chat message via `curl`; confirm `consultations` row is created in the `db` container with `messages` populated and AI-extracted metadata; run `pytest` for consultation / privacy tests as applicable.
 
 ---
 
@@ -144,7 +147,9 @@
 **Deliverables:**
 
 - `POST /consultations/{id}/draft`: generates draft `summary` + `proposal` preview with PII
-  redaction and tone reframing (router uses Claude when flag on; else Gemini). Accepts optional
+  redaction and tone reframing (router uses Claude when flag on; else Gemini). **Do not** pass
+  `user_name` / `user_email` into the LLM — only the (PII-masked) transcript and RAG context.
+  Accepts optional
   `language` field (`"auto"` | `"ja"` | `"en"`) to fix the draft output language. Uses fixed
   section headings (`### 概要/原因分析/提案事項` for Japanese, `### Executive Summary/Root Cause
   Analysis/Proposed Actions` for English) for reliable client-side parsing. Does **not** write to DB.
@@ -168,9 +173,9 @@
 
 **Deliverables:**
 
-- Admin login (Supabase Auth or your chosen IdP) and role check.
+- Admin login: shared **`ADMIN_PASSWORD`** verified server-side; short-lived **JWT** (`JWT_SECRET`, `JWT_ALGORITHM`, expiry) returned from `POST /admin/login`. Protected routes require `Authorization: Bearer <token>`.
 - Dashboard routes: Knowledge Base, Departments, Trends, Proposals.
-- **Verify:** Admin login succeeds in browser; non-admin routes are blocked.
+- **Verify:** Admin login succeeds in browser; API calls without a valid token return 401; run `pytest tests/test_admin.py` (or subset) for auth and guarded routes.
 
 ---
 
@@ -181,8 +186,8 @@
 **Deliverables:**
 
 - CRUD for departments.
-- Upload/list/edit/delete knowledge chunks (calls Step 5 APIs).
-- **Verify:** Upload and delete a document from the admin UI; confirm DB state.
+- Knowledge Base UI: **documents and versions** (new document, new version upload, activate/deactivate semantics via backend). **No** per-chunk text editing in the UI; optional admin action to **count/delete legacy orphan chunks** (`version_id` NULL) if present after migrations.
+- **Verify:** Upload and delete a document (or version) from the admin UI; confirm `kb_documents` / `kb_document_versions` / `knowledge_base` state in the DB.
 
 ---
 
@@ -192,10 +197,11 @@
 
 **Deliverables:**
 
-- Aggregations for `category` × `severity` heatmap (per department filters if required by product).
-- Gemini-generated bullet summary from recent consultation metadata.
-- Proposal list filter `is_submitted=true`; detail view; `admin_status` updates.
+- Aggregations for `category` × `severity` heatmap plus per-department breakdown; optional filters **department**, **date_from** / **date_to** (ISO dates; server uses `created_at::date` comparisons).
+- Gemini-generated management brief from aggregated rows; optional **language** parameter for output.
+- Proposal list filter `is_submitted=true`; detail view; `admin_status` updates (`New`, `In Progress`, `Resolved`, `Archived`).
 - Top-down "analytical" mode (multi-proposal / policy draft) behind same model router.
+- **Verify:** `pytest tests/test_admin.py` covers proposals, trends filters, departments, and mocked LLM endpoints where applicable.
 
 ---
 
@@ -206,6 +212,7 @@
 **Deliverables:**
 
 - Rate limiting, input size limits, and secrets handling strict in production.
+- Production checklist for **PII masking** coverage, **`MESSAGES_ENCRYPTION_KEY`** rotation, and **`CONSULTATION_RETENTION_DAYS`** policy; confirm submitted proposals are never deleted by retention unless explicitly changed in product policy.
 - Enable **Claude routing** only in production via env; document toggles.
 - Logging/tracing (request IDs), basic monitoring hooks.
 - Production Docker image optimizations (multi-stage builds, non-root user, minimal base images).
