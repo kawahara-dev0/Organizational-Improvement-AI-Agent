@@ -1,0 +1,59 @@
+# Production Docker Compose override
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Prerequisites:
+#   1. Copy .env.example to .env and fill in all production values.
+#   2. Ensure DATABASE_URL points to your production DB (e.g. Supabase).
+#   3. Run database migrations once before starting:
+#        docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm migrate
+#
+# This file:
+#   - Switches api/web to their production build targets (no hot-reload mounts)
+#   - Sets APP_ENV=production on the api (triggers secrets validation at startup)
+#   - Exposes the api on port 8000 and web on port 3000 (put a reverse proxy in front)
+#   - Disables the local db and migrate services (use an external managed DB in prod)
+
+services:
+  # Disable the local DB — use an external managed Postgres (e.g. Supabase) in prod.
+  db:
+    profiles: ["dev-only"]   # excluded unless explicitly activated
+
+  migrate:
+    profiles: ["dev-only"]
+
+  seed:
+    profiles: ["dev-only"]
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+      target: prod
+    restart: always
+    env_file: .env
+    environment:
+      APP_ENV: production
+      # DATABASE_URL must be set in .env pointing to your production DB.
+    ports:
+      - "8000:8000"
+    volumes: []   # no source mounts in production
+    depends_on: []
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      # runner stage is the final multi-stage target (already default in the Dockerfile)
+    command: node server.js
+    restart: always
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      # NEXT_PUBLIC_API_URL must point to the public URL of the api service.
+    ports:
+      - "3000:3000"
+    volumes: []
+    depends_on:
+      - api

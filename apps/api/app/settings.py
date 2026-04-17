@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     # Auto-delete consultations older than this many days (0 = disabled).
     consultation_retention_days: int = 0
 
+    # ── CORS ──────────────────────────────────────────────────
+    # Space-separated list of allowed origins.
+    # Dev default: localhost only.  Set to your actual frontend URL in production.
+    cors_origins: str = "http://localhost:3000"
+
+    # ── Rate limiting ──────────────────────────────────────────
+    # Global chat request limit per client IP (slowapi format: "N/period").
+    chat_rate_limit: str = "30/minute"
+
     # ── App ───────────────────────────────────────────────────
     app_env: str = "development"
     log_level: str = "INFO"

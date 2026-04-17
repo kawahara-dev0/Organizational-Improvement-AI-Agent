@@ -53,9 +53,10 @@ async def test_create_consultation_with_department(db_conn) -> None:
 async def test_append_message_without_mode(db_conn) -> None:
     """A message appended without mode should have no 'mode' key in JSONB."""
     cid = await create_consultation(db_conn)
-    await append_message(db_conn, cid, "user", "Hello")
+    with patch("app.consultations.repository.is_encryption_enabled", return_value=False):
+        await append_message(db_conn, cid, "user", "Hello")
+        session = await get_consultation(db_conn, cid)
 
-    session = await get_consultation(db_conn, cid)
     assert session is not None
     msgs = session["messages"]
     assert len(msgs) == 1
@@ -68,10 +69,11 @@ async def test_append_message_without_mode(db_conn) -> None:
 async def test_append_message_with_mode(db_conn) -> None:
     """An assistant message appended with mode should store the mode in JSONB."""
     cid = await create_consultation(db_conn)
-    await append_message(db_conn, cid, "user", "My question")
-    await append_message(db_conn, cid, "assistant", "My answer", mode="personal")
+    with patch("app.consultations.repository.is_encryption_enabled", return_value=False):
+        await append_message(db_conn, cid, "user", "My question")
+        await append_message(db_conn, cid, "assistant", "My answer", mode="personal")
+        session = await get_consultation(db_conn, cid)
 
-    session = await get_consultation(db_conn, cid)
     assert session is not None
     msgs = session["messages"]
     assert len(msgs) == 2
@@ -84,9 +86,10 @@ async def test_append_message_with_mode(db_conn) -> None:
 async def test_append_message_structural_mode(db_conn) -> None:
     """mode='structural' should be stored correctly."""
     cid = await create_consultation(db_conn)
-    await append_message(db_conn, cid, "assistant", "Analysis", mode="structural")
+    with patch("app.consultations.repository.is_encryption_enabled", return_value=False):
+        await append_message(db_conn, cid, "assistant", "Analysis", mode="structural")
+        session = await get_consultation(db_conn, cid)
 
-    session = await get_consultation(db_conn, cid)
     assert session is not None
     assert session["messages"][0]["mode"] == "structural"
 

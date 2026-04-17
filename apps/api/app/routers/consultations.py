@@ -22,8 +22,10 @@ import re
 from typing import Literal
 
 from asyncpg import Connection
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.ai.enums import RouterTask
 from app.ai.prompts import (
@@ -50,6 +52,8 @@ from app.utils.pii import mask_pii
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/consultations", tags=["consultations"])
+
+_limiter = Limiter(key_func=get_remote_address)
 
 # 429 error class from langchain_google_genai (imported lazily to avoid hard dep)
 _QUOTA_ERROR_NAMES = {"ChatGoogleGenerativeAIError", "RateLimitError"}
@@ -243,7 +247,9 @@ async def get_session(
 
 
 @router.post("/{consultation_id}/chat", response_model=ChatResponse)
+@_limiter.limit(lambda: settings.chat_rate_limit)
 async def chat(
+    request: Request,
     consultation_id: str,
     body: ChatRequest,
     conn: Connection = Depends(get_conn),
