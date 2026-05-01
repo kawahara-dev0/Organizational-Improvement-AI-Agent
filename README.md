@@ -9,9 +9,11 @@ OIAgent/
 ├── apps/
 │   ├── api/        # Python 3.12, FastAPI backend
 │   └── web/        # Next.js 15 (App Router) frontend
-├── docs/           # Design documents and implementation roadmap
+├── db/
+│   └── migrations/ # PostgreSQL + pgvector schema (apply in order)
+├── docs/           # Design, roadmap, security notes
 └── .github/
-    └── workflows/  # CI: static analysis on every push / PR
+    └── workflows/  # CI on every push / PR
 ```
 
 ## Prerequisites
@@ -58,13 +60,22 @@ Copy `.env.example` to `.env` at the repo root and fill in:
 | `ANTHROPIC_API_KEY` | Anthropic API key (production only) |
 | `ENABLE_CLAUDE_ROUTING` | Set `true` to activate Claude model routing (production) |
 
+See [`.env.example`](.env.example) for the full list (admin JWT, CORS, rate limits, message encryption, RAG flags, and local Postgres settings).
+
 ## CI
 
-Every push and pull request triggers `.github/workflows/ci.yml`:
+Every push and pull request triggers [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
-- **Python**: Ruff lint + format check (mypy opt-in)
+- **Python — static analysis**: Ruff lint + format check (mypy opt-in)
+- **Python — tests**: Apply `db/migrations/*.sql` to a temporary PostgreSQL **pgvector** service, then `pytest`
 - **Frontend**: ESLint + TypeScript (`tsc --noEmit`)
 
-## Implementation roadmap
+## Documentation
 
-See [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md).
+| Doc | Contents |
+|-----|----------|
+| [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md) | Setup steps and verification checklist |
+| [`docs/design.md`](docs/design.md) | Architecture and feature design |
+| [`docs/security.md`](docs/security.md) | Threat model, hardening, and remaining risks |
+
+Start with the implementation roadmap for step-by-step setup and verification.

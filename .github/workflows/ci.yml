@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
 
+# Opt into Node.js 24 for JS-based actions (checkout, setup-node, setup-uv) until
+# it becomes the runner default. See:
+# https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── Python (Ruff + mypy) ──────────────────────────────────────────────────
   lint-api:
@@ -14,12 +20,13 @@ jobs:
         working-directory: apps/api
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
+          activate-environment: true
 
       - name: Install dev dependencies
         run: uv sync --group dev
@@ -58,15 +65,18 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgresql://oiagent:oiagent@localhost:5432/oiagent
+      # Use 127.0.0.1 so the client does not prefer IPv6 (::1) while the service
+      # port mapping is IPv4-only on some runners.
+      DATABASE_URL: postgresql://oiagent:oiagent@127.0.0.1:5432/oiagent
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
+          activate-environment: true
 
       - name: Install psql client
         run: |
@@ -77,11 +87,13 @@ jobs:
         run: uv sync --group dev
 
       - name: Apply database migrations
+        shell: bash
         run: |
-          for f in ../../db/migrations/*.sql; do
+          set -euo pipefail
+          while IFS= read -r f; do
             echo "Applying $f"
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
-          done
+          done < <(find ../../db/migrations -maxdepth 1 -type f -name '*.sql' | LC_ALL=C sort)
 
       - name: Pytest
         run: uv run pytest -q
@@ -95,10 +107,10 @@ jobs:
         working-directory: apps/web
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "24"
           cache: "npm"
