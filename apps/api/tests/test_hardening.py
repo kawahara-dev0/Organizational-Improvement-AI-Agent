@@ -109,7 +109,7 @@ async def test_chat_rate_limit_returns_429_when_exceeded(db_conn) -> None:
     from app.consultations.repository import create_consultation
     from app.db.session import get_conn as real_get_conn
 
-    cid = await create_consultation(db_conn)
+    cid, token = await create_consultation(db_conn)
 
     async def _override():
         yield db_conn
@@ -123,6 +123,7 @@ async def test_chat_rate_limit_returns_429_when_exceeded(db_conn) -> None:
                 # First request — should succeed (or fail for a business reason, not rate-limit)
                 r1 = await client.post(
                     f"/consultations/{cid}/chat",
+                    headers={"X-Consultation-Token": token},
                     json={"content": "hello", "mode": "personal"},
                 )
                 assert r1.status_code != 429, "First request must not be rate-limited"
@@ -130,6 +131,7 @@ async def test_chat_rate_limit_returns_429_when_exceeded(db_conn) -> None:
                 # Second request — must be rejected with 429
                 r2 = await client.post(
                     f"/consultations/{cid}/chat",
+                    headers={"X-Consultation-Token": token},
                     json={"content": "hello again", "mode": "personal"},
                 )
                 assert r2.status_code == 429

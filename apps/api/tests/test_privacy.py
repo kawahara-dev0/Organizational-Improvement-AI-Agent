@@ -202,7 +202,7 @@ async def test_encrypted_messages_roundtrip_in_db(db_conn) -> None:
         _fernet.cache_clear()
 
         try:
-            cid = await create_consultation(db_conn)
+            cid, _token = await create_consultation(db_conn)
             await append_message(db_conn, cid, "user", "I need help with harassment.")
             await append_message(db_conn, cid, "assistant", "I understand.", mode="personal")
 

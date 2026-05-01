@@ -17,7 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.auth.deps import create_admin_token
 from app.db.session import get_conn as real_get_conn
-from app.kb.doc_repository import VERSION_RETENTION, purge_old_versions
+from app.kb.doc_repository import VERSION_RETENTION, archive_document, purge_old_versions
 from main import app
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
@@ -160,6 +160,34 @@ async def test_purge_does_not_create_orphan_chunks(db_conn) -> None:
     orphan_count = await db_conn.fetchval(
         "SELECT COUNT(*) FROM knowledge_base WHERE document_id = $1::uuid AND version_id IS NULL",
         doc_id,
+    )
+    assert orphan_count == 0
+
+
+@pytest.mark.asyncio
+async def test_archive_document_deletes_chunks_without_orphans(db_conn) -> None:
+    """Deleting a document must delete its chunks instead of leaving legacy rows."""
+    doc_id = await _create_document(db_conn)
+    version_id = await _create_version(db_conn, doc_id, version_no=1, is_active=True)
+    await _create_chunk(db_conn, doc_id, version_id)
+    await db_conn.execute(
+        "UPDATE kb_documents SET current_version_id = $1::uuid WHERE id = $2::uuid",
+        version_id,
+        doc_id,
+    )
+
+    deleted = await archive_document(db_conn, doc_id)
+
+    assert deleted is True
+    chunk_count = await db_conn.fetchval(
+        "SELECT COUNT(*) FROM knowledge_base WHERE document_id = $1::uuid", doc_id
+    )
+    assert chunk_count == 0
+    orphan_count = await db_conn.fetchval(
+        """
+        SELECT COUNT(*) FROM knowledge_base
+        WHERE document_id IS NULL AND version_id IS NULL
+        """
     )
     assert orphan_count == 0
 

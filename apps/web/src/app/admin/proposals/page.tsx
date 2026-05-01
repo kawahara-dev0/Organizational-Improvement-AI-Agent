@@ -389,8 +389,31 @@ export default function ProposalsPage() {
               <button
                 onClick={() => void runAnalysis()}
                 disabled={analyzing || checkedIds.size === 0}
-                className="rounded border border-purple-600 bg-purple-600/20 px-4 py-1.5 text-sm text-purple-300 transition hover:bg-purple-600/30 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex items-center gap-2 rounded border border-purple-600 bg-purple-600/20 px-4 py-1.5 text-sm text-purple-300 transition hover:bg-purple-600/30 disabled:cursor-not-allowed disabled:opacity-40"
               >
+                {analyzing && (
+                  <svg
+                    className="h-4 w-4 animate-spin"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                    />
+                  </svg>
+                )}
                 {analyzing
                   ? "Analyzing…"
                   : `Analyze Selected (${checkedIds.size})`}
@@ -437,7 +460,30 @@ export default function ProposalsPage() {
           )}
 
           {analyzing && (
-            <p className="text-sm text-zinc-400">Generating draft…</p>
+            <div className="flex items-center gap-2 text-sm text-zinc-400">
+              <svg
+                className="h-4 w-4 animate-spin text-purple-300"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                />
+              </svg>
+              <span>Generating draft…</span>
+            </div>
           )}
         </section>
 

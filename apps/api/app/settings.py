@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # ── Rate limiting ──────────────────────────────────────────
     # Global chat request limit per client IP (slowapi format: "N/period").
     chat_rate_limit: str = "30/minute"
+    # Admin login is single-password auth; keep brute-force attempts low.
+    admin_login_rate_limit: str = "5/minute"
 
     # ── App ───────────────────────────────────────────────────
     app_env: str = "development"

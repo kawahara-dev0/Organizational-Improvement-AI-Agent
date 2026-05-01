@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,52 +21,6 @@ logger = logging.getLogger(__name__)
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=[])
-
-# ── FastAPI app ───────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="OIAgent API",
-    description="Organizational Improvement AI Agent — backend",
-    version="0.1.0",
-)
-
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-# ── CORS ──────────────────────────────────────────────────────────────────────
-_cors_origins = [o.strip() for o in settings.cors_origins.split() if o.strip()]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ── Request-ID middleware ─────────────────────────────────────────────────────
-@app.middleware("http")
-async def request_id_middleware(request: Request, call_next):
-    """Attach a unique request ID to every request for tracing."""
-    req_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
-    request.state.req_id = req_id
-
-    # Inject req_id into all log records emitted during this request.
-    old_factory = logging.getLogRecordFactory()
-
-    def record_factory(*args, **kwargs):
-        record = old_factory(*args, **kwargs)
-        record.req_id = req_id
-        return record
-
-    logging.setLogRecordFactory(record_factory)
-    try:
-        response = await call_next(request)
-    finally:
-        logging.setLogRecordFactory(old_factory)
-
-    response.headers["X-Request-ID"] = req_id
-    return response
 
 
 # ── Retention background worker ───────────────────────────────────────────────
@@ -135,8 +90,9 @@ def _check_production_secrets() -> None:
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    retention_task: asyncio.Task[None] | None = None
     if settings.app_env == "production":
         _check_production_secrets()
         logger.info("Production secrets validation passed", extra={"req_id": "-"})
@@ -149,18 +105,71 @@ async def startup() -> None:
         extra={"req_id": "-"},
     )
     if settings.consultation_retention_days > 0:
-        asyncio.create_task(_retention_worker())
+        retention_task = asyncio.create_task(_retention_worker())
         logger.info(
             "Retention policy: non-submitted sessions deleted after %d days",
             settings.consultation_retention_days,
             extra={"req_id": "-"},
         )
 
+    try:
+        yield
+    finally:
+        if retention_task is not None:
+            retention_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await retention_task
 
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    await close_pool()
-    logger.info("DB connection pool closed", extra={"req_id": "-"})
+        await close_pool()
+        logger.info("DB connection pool closed", extra={"req_id": "-"})
+
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="OIAgent API",
+    description="Organizational Improvement AI Agent — backend",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+_cors_origins = [o.strip() for o in settings.cors_origins.split() if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── Request-ID middleware ─────────────────────────────────────────────────────
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Attach a unique request ID to every request for tracing."""
+    req_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    request.state.req_id = req_id
+
+    # Inject req_id into all log records emitted during this request.
+    old_factory = logging.getLogRecordFactory()
+
+    def record_factory(*args, **kwargs):
+        record = old_factory(*args, **kwargs)
+        record.req_id = req_id
+        return record
+
+    logging.setLogRecordFactory(record_factory)
+    try:
+        response = await call_next(request)
+    finally:
+        logging.setLogRecordFactory(old_factory)
+
+    response.headers["X-Request-ID"] = req_id
+    return response
 
 
 # ── Routers ───────────────────────────────────────────────────────────────────

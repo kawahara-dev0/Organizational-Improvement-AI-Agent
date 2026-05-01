@@ -119,7 +119,7 @@ async def _insert_chunk(
 
 @pytest.mark.asyncio
 async def test_retrieve_returns_closest_first(db_conn) -> None:
-    """Chunk A should rank before chunk B when the query vector equals A."""
+    """Only strong matches should be returned, with the closest chunk first."""
     src = f"{_TEST_SRC}_closest"
     id_a = await _insert_chunk(
         db_conn,
@@ -137,10 +137,9 @@ async def test_retrieve_returns_closest_first(db_conn) -> None:
     with patch("app.kb.retriever.embed_query", new=AsyncMock(return_value=QUERY_LIKE_A)):
         results = await retrieve(db_conn, query="vacation days", top_k=2, source_file=src)
 
-    assert len(results) == 2
+    assert len(results) == 1
     assert results[0]["id"] == id_a, "Closest chunk (A) should be ranked first"
-    assert results[1]["id"] == id_b
-    assert results[0]["similarity"] > results[1]["similarity"]
+    assert id_b not in {r["id"] for r in results}
 
 
 @pytest.mark.asyncio

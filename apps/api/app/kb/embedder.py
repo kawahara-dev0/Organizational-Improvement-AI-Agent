@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 
 from google import genai
 from google.genai import types as genai_types
+from google.genai.errors import ClientError
 
 from app.kb.parser import Chunk
 from app.settings import settings
@@ -40,9 +42,29 @@ TPM_LIMIT = 20_000  # conservative ceiling (actual 30 K, keeps headroom)
 # Conservative estimate: 1 char ≈ 1 token for CJK-heavy documents.
 CHARS_PER_TOKEN = 1
 
+# 429 RESOURCE_EXHAUSTED: provider asks to retry; client-side TPM/RPM guards are approximate.
+_MAX_EMBED_ATTEMPTS = 7  # first try + up to 6 backoff retries
+_EMBED_RETRY_BASE_SEC = 2.0
+_EMBED_RETRY_MAX_DELAY_SEC = 60.0
+
 
 def _estimate_tokens(texts: list[str]) -> int:
     return max(1, sum(len(t) for t in texts) // CHARS_PER_TOKEN)
+
+
+def _is_daily_quota_exhausted(exc: ClientError) -> bool:
+    """Return True when the 429 is a persistent daily/billing quota exhaustion.
+
+    Google returns two distinct RESOURCE_EXHAUSTED messages:
+    - Transient RPM/TPM limit: "Quota exceeded for quota metric 'Embed…PerMinute…'"
+    - Persistent daily quota:  "You exceeded your current quota, please check your
+                                plan and billing details."
+
+    Retrying won't help for the daily case; fail fast so the caller can surface
+    a meaningful message to the user.
+    """
+    msg = str(getattr(exc, "message", "")).lower()
+    return "check your plan" in msg or "billing details" in msg
 
 
 class _TpmGuard:
@@ -106,16 +128,41 @@ async def embed_chunks(chunks: list[Chunk]) -> list[list[float]]:
             estimated_tokens,
         )
 
-        response = await asyncio.to_thread(
-            client.models.embed_content,
-            model=EMBEDDING_MODEL,
-            contents=texts,
-            config=genai_types.EmbedContentConfig(
-                task_type="RETRIEVAL_DOCUMENT",
-                # Must match DB column VECTOR(768); API default can be up to 3072.
-                output_dimensionality=768,
-            ),
-        )
+        attempt = 0
+        while True:
+            try:
+                response = await asyncio.to_thread(
+                    client.models.embed_content,
+                    model=EMBEDDING_MODEL,
+                    contents=texts,
+                    config=genai_types.EmbedContentConfig(
+                        task_type="RETRIEVAL_DOCUMENT",
+                        # Must match DB column VECTOR(768); API default can be up to 3072.
+                        output_dimensionality=768,
+                    ),
+                )
+                break
+            except ClientError as exc:
+                code = getattr(exc, "code", None)
+                if code != 429 or attempt >= _MAX_EMBED_ATTEMPTS - 1:
+                    raise
+                # Daily quota exhaustion does not recover within minutes — fail fast.
+                if _is_daily_quota_exhausted(exc):
+                    raise
+                attempt += 1
+                raw = min(
+                    _EMBED_RETRY_MAX_DELAY_SEC,
+                    _EMBED_RETRY_BASE_SEC * (2 ** (attempt - 1)),
+                )
+                sleep_s = raw * (1.0 + random.random() * 0.25)
+                logger.warning(
+                    "Embedding batch %d: HTTP 429 from provider; retry %d/%d after %.1fs",
+                    i,
+                    attempt,
+                    _MAX_EMBED_ATTEMPTS - 1,
+                    sleep_s,
+                )
+                await asyncio.sleep(sleep_s)
         for emb in response.embeddings:
             vectors.append(emb.values)
 
@@ -139,3 +186,49 @@ async def embed_query(text: str) -> list[float]:
         ),
     )
     return response.embeddings[0].values
+
+
+async def embed_categories(categories: list[str]) -> list[list[float]]:
+    """Embed category name strings for hybrid RAG category selection.
+
+    Uses RETRIEVAL_DOCUMENT so category vectors are compatible with the
+    query vectors produced by embed_query (RETRIEVAL_QUERY).  Applies the
+    same 429 backoff logic as embed_chunks.
+    """
+    if not categories:
+        return []
+
+    client = _get_client()
+    attempt = 0
+    while True:
+        try:
+            response = await asyncio.to_thread(
+                client.models.embed_content,
+                model=EMBEDDING_MODEL,
+                contents=categories,
+                config=genai_types.EmbedContentConfig(
+                    task_type="RETRIEVAL_DOCUMENT",
+                    output_dimensionality=768,
+                ),
+            )
+            return [list(emb.values) for emb in response.embeddings]
+        except ClientError as exc:
+            code = getattr(exc, "code", None)
+            if code != 429 or attempt >= _MAX_EMBED_ATTEMPTS - 1:
+                raise
+            # Daily quota exhaustion does not recover within minutes — fail fast.
+            if _is_daily_quota_exhausted(exc):
+                raise
+            attempt += 1
+            raw = min(
+                _EMBED_RETRY_MAX_DELAY_SEC,
+                _EMBED_RETRY_BASE_SEC * (2 ** (attempt - 1)),
+            )
+            sleep_s = raw * (1.0 + random.random() * 0.25)
+            logger.warning(
+                "embed_categories: HTTP 429; retry %d/%d after %.1fs",
+                attempt,
+                _MAX_EMBED_ATTEMPTS - 1,
+                sleep_s,
+            )
+            await asyncio.sleep(sleep_s)

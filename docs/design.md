@@ -41,6 +41,7 @@ Goal: Provide immediate value to the employee while capturing anonymized data fo
 
 3. Contextual Analysis (LLM + RAG):
 - RAG Search: AI searches `#knowledge_base` for relevant company policies and strategy documents (can be disabled per turn via `RAG_ENABLED=false` to stay within API free-tier limits). Retrieval uses only chunks tied to an **active document version** (`kb_document_versions.is_active = TRUE`); legacy rows without a version are excluded from search.
+- **Hybrid category retrieval**: Knowledge Base uploads may mark section/category boundaries with standalone `[[KB:Section Name]]` lines. Category names are embedded into `#kb_category_vectors`; query-time RAG first selects the top matching categories, searches chunks within those categories, also runs a small unfiltered fallback search, then deduplicates and reranks candidates by chunk similarity. This improves section targeting without fully depending on category selection.
 - **Source citations**: The API returns a structured `sources` list (document title, primary page from highest similarity, optional “Also referenced” supplementary pages) so the UI can show references alongside inline `[1]`, `[2]` markers in the assistant reply.
 - Response Mode Selection: The employee selects one of two response modes per message via the UI:
   * **Personal Advice**: Practical, empathetic immediate actions for the employee. Responds in the same language as the employee's message.
@@ -100,9 +101,10 @@ Goal: Manage organizational context and translate employee feedback into strateg
 1. Knowledge Base Management (RAG Context)
 - Upload & Sync: Manager uploads files (PDF/Excel/Docx) such as Employee Handbooks, Internal Policies, or Quarterly Goals.
 - **Document-centric model**: Each logical document lives in `#kb_documents` with one or more file versions in `#kb_document_versions`; chunks in `#knowledge_base` reference `document_id` and `version_id`. Only the **active** version is used for retrieval; uploading a new version supersedes the previous one for search.
-- Processing: The system chunks text and writes embeddings into `#knowledge_base` linked to the active version.
-- **Version retention**: A maximum of **3 versions** (newest-first) are kept per document. When a new version is finalized, versions beyond the 3rd oldest are automatically deleted together with their `#knowledge_base` chunks. Chunks are deleted explicitly before the version row to prevent them from becoming orphan/legacy rows (the FK is `ON DELETE SET NULL`, not `CASCADE`).
-- **No direct chunk editing** in the admin UI; accuracy is maintained by uploading a corrected file version. An admin tool may report and delete **legacy/orphan chunks** (`version_id` NULL) left from older ingestion paths.
+- **Per-chunk categories**: Source documents can include standalone `[[KB:Section Name]]` markers. The marker applies to following chunks until the next marker, carries across page/chunk boundaries, and is stripped from chunk text. Content before the first marker is categorized as `Front matter`; documents with no markers are categorized as `Uncategorized`.
+- Processing: The system chunks text, writes chunk embeddings into `#knowledge_base`, and writes category embeddings into `#kb_category_vectors` for hybrid retrieval. `Uncategorized` is excluded from category-vector selection because it has no meaningful semantic value.
+- **Version retention**: A maximum of **3 versions** (newest-first) are kept per document. When a new version is finalized, versions beyond the 3rd oldest are automatically deleted together with their `#knowledge_base` chunks. `knowledge_base.document_id` and `knowledge_base.version_id` use `ON DELETE CASCADE`, so deleting a document or version removes its chunks instead of creating orphan/legacy rows.
+- **No direct chunk editing** in the admin UI; accuracy is maintained by uploading a corrected file version. The admin detail view can show generated chunks and their categories. A maintenance tool may report and delete **legacy/orphan chunks** (`version_id` NULL) left from older ingestion paths.
 
 2. Department Structure Management
 - Registry: Manager defines the list of valid `#department` (e.g., Sales, Engineering, HR). These values populate the dropdown in UC-1.
@@ -122,8 +124,8 @@ knowledge_base {
     text    content       Chunked text content from uploaded documents.
     VECTOR  embedding     Vector data (e.g., 768 dimensions for Gemini Embedding).
     JSONB   metadata	    Source file name, page numbers, category, chunk_index, etc.
-    UUID    document_id   Optional FK → kb_documents (set for versioned uploads).
-    UUID    version_id    Optional FK → kb_document_versions (retrieval requires active version).
+    UUID    document_id   Optional FK → kb_documents, ON DELETE CASCADE (set for versioned uploads).
+    UUID    version_id    Optional FK → kb_document_versions, ON DELETE CASCADE (retrieval requires active version).
 }
 
 kb_documents {
@@ -141,6 +143,15 @@ kb_document_versions {
     text    source_file  Original filename.
     bool    is_active    Only active version’s chunks participate in RAG.
     int     chunk_count  Filled after embedding pipeline.
+    timestamp created_at
+}
+
+kb_category_vectors {
+    UUID    id           Primary Key.
+    UUID    document_id  FK → kb_documents, ON DELETE CASCADE.
+    UUID    version_id   FK → kb_document_versions, ON DELETE CASCADE.
+    text    category     Category/section name extracted from `[[KB:...]]` markers.
+    VECTOR  embedding    768-dim category embedding used for hybrid RAG pre-selection.
     timestamp created_at
 }
 

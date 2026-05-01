@@ -3,7 +3,7 @@
 Covers:
 - create_consultation: department is persisted (or null) correctly
 - append_message: mode field is stored in the JSONB messages array
-- update_metadata via PATCH /consultations/{id}/department
+- metadata updates and explicit department selection
 - GET /departments endpoint
 
 Run with:
@@ -12,6 +12,7 @@ Run with:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from app.consultations.repository import (
     append_message,
     create_consultation,
     get_consultation,
+    set_consultation_department,
     update_metadata,
 )
 from main import app
@@ -31,7 +33,7 @@ from main import app
 @pytest.mark.asyncio
 async def test_create_consultation_no_department(db_conn) -> None:
     """A consultation created without a department should have department=None."""
-    cid = await create_consultation(db_conn)
+    cid, _token = await create_consultation(db_conn)
     row = await db_conn.fetchrow("SELECT department FROM consultations WHERE id = $1", cid)
     assert row is not None
     assert row["department"] is None
@@ -40,7 +42,7 @@ async def test_create_consultation_no_department(db_conn) -> None:
 @pytest.mark.asyncio
 async def test_create_consultation_with_department(db_conn) -> None:
     """The department passed to create_consultation should be saved to the DB."""
-    cid = await create_consultation(db_conn, department="Engineering")
+    cid, _token = await create_consultation(db_conn, department="Engineering")
     row = await db_conn.fetchrow("SELECT department FROM consultations WHERE id = $1", cid)
     assert row is not None
     assert row["department"] == "Engineering"
@@ -52,7 +54,7 @@ async def test_create_consultation_with_department(db_conn) -> None:
 @pytest.mark.asyncio
 async def test_append_message_without_mode(db_conn) -> None:
     """A message appended without mode should have no 'mode' key in JSONB."""
-    cid = await create_consultation(db_conn)
+    cid, _token = await create_consultation(db_conn)
     with patch("app.consultations.repository.is_encryption_enabled", return_value=False):
         await append_message(db_conn, cid, "user", "Hello")
         session = await get_consultation(db_conn, cid)
@@ -68,7 +70,7 @@ async def test_append_message_without_mode(db_conn) -> None:
 @pytest.mark.asyncio
 async def test_append_message_with_mode(db_conn) -> None:
     """An assistant message appended with mode should store the mode in JSONB."""
-    cid = await create_consultation(db_conn)
+    cid, _token = await create_consultation(db_conn)
     with patch("app.consultations.repository.is_encryption_enabled", return_value=False):
         await append_message(db_conn, cid, "user", "My question")
         await append_message(db_conn, cid, "assistant", "My answer", mode="personal")
@@ -85,7 +87,7 @@ async def test_append_message_with_mode(db_conn) -> None:
 @pytest.mark.asyncio
 async def test_append_message_structural_mode(db_conn) -> None:
     """mode='structural' should be stored correctly."""
-    cid = await create_consultation(db_conn)
+    cid, _token = await create_consultation(db_conn)
     with patch("app.consultations.repository.is_encryption_enabled", return_value=False):
         await append_message(db_conn, cid, "assistant", "Analysis", mode="structural")
         session = await get_consultation(db_conn, cid)
@@ -98,29 +100,102 @@ async def test_append_message_structural_mode(db_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_metadata_sets_department(db_conn) -> None:
-    """update_metadata should overwrite department when a new value is provided."""
-    cid = await create_consultation(db_conn)
-    await update_metadata(db_conn, cid, department="Sales", category=None, severity=0)
+async def test_update_metadata_sets_category_and_severity(db_conn) -> None:
+    """update_metadata should persist LLM-managed category and severity only."""
+    cid, _token = await create_consultation(db_conn)
+    await update_metadata(db_conn, cid, category="Workload", severity=3)
 
-    row = await db_conn.fetchrow("SELECT department FROM consultations WHERE id = $1", cid)
+    row = await db_conn.fetchrow(
+        "SELECT department, category, severity FROM consultations WHERE id = $1",
+        cid,
+    )
     assert row is not None
-    assert row["department"] == "Sales"
+    assert row["department"] is None
+    assert row["category"] == "Workload"
+    assert row["severity"] == 3
 
 
 @pytest.mark.asyncio
-async def test_update_metadata_preserves_existing_department_on_null(db_conn) -> None:
-    """Passing department=None to update_metadata should not overwrite an existing value
-    (COALESCE($1, department) semantics)."""
-    cid = await create_consultation(db_conn, department="Finance")
-    await update_metadata(db_conn, cid, department=None, category="Compensation", severity=2)
+async def test_update_metadata_preserves_selected_department(db_conn) -> None:
+    """LLM metadata updates must not overwrite the user-selected department."""
+    cid, _token = await create_consultation(db_conn, department="Finance")
+    await update_metadata(db_conn, cid, category="Compensation", severity=2)
 
     row = await db_conn.fetchrow(
-        "SELECT department, category FROM consultations WHERE id = $1", cid
+        "SELECT department, category FROM consultations WHERE id = $1",
+        cid,
     )
     assert row is not None
-    assert row["department"] == "Finance"  # preserved
+    assert row["department"] == "Finance"
     assert row["category"] == "Compensation"
+
+
+@pytest.mark.asyncio
+async def test_set_consultation_department_clears_department(db_conn) -> None:
+    """Explicit department selection should be able to clear the stored value."""
+    cid, _token = await create_consultation(db_conn, department="Finance")
+    await set_consultation_department(db_conn, cid, None)
+
+    row = await db_conn.fetchrow("SELECT department FROM consultations WHERE id = $1", cid)
+    assert row is not None
+    assert row["department"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_department_clears_department(db_conn) -> None:
+    """PATCH /department should persist the dropdown value exactly, including null."""
+    from app.db.session import get_conn as real_get_conn
+
+    cid, token = await create_consultation(db_conn, department="Finance")
+
+    async def override_get_conn():
+        yield db_conn
+
+    app.dependency_overrides[real_get_conn] = override_get_conn
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.patch(
+                f"/consultations/{cid}/department",
+                headers={"X-Consultation-Token": token},
+                json={"department": None},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    row = await db_conn.fetchrow("SELECT department FROM consultations WHERE id = $1", cid)
+    assert row is not None
+    assert row["department"] is None
+
+
+@pytest.mark.asyncio
+async def test_metadata_extraction_does_not_overwrite_selected_department(db_conn) -> None:
+    """LLM metadata may infer a department, but only the dropdown value should persist."""
+    from app.routers.consultations import _extract_and_persist_metadata
+
+    cid, _token = await create_consultation(db_conn, department="Human Resources")
+    messages = [
+        {"role": "user", "content": "製造ラインの品質担当です。"},
+        {"role": "assistant", "content": "改善点を整理します。"},
+    ]
+    extracted = SimpleNamespace(
+        content='{"department": "製造ライン", "category": "Workload", "severity": 3}'
+    )
+
+    with patch(
+        "app.routers.consultations.invoke_chat",
+        new=AsyncMock(return_value=extracted),
+    ):
+        await _extract_and_persist_metadata(db_conn, cid, messages)
+
+    row = await db_conn.fetchrow(
+        "SELECT department, category, severity FROM consultations WHERE id = $1",
+        cid,
+    )
+    assert row is not None
+    assert row["department"] == "Human Resources"
+    assert row["category"] == "Workload"
+    assert row["severity"] == 3
 
 
 # ── GET /departments endpoint ──────────────────────────────────────────────────
@@ -196,6 +271,37 @@ async def test_post_consultations_saves_department(db_conn) -> None:
     row = await db_conn.fetchrow("SELECT department FROM consultations WHERE id = $1", cid)
     assert row is not None
     assert row["department"] == "Human Resources"
+    assert "access_token" in response.json()
+
+
+@pytest.mark.asyncio
+async def test_consultation_get_requires_access_token(db_conn) -> None:
+    """A consultation UUID alone must not authorize session reads."""
+    from app.db.session import get_conn as real_get_conn
+
+    cid, token = await create_consultation(db_conn)
+
+    async def override_get_conn():
+        yield db_conn
+
+    app.dependency_overrides[real_get_conn] = override_get_conn
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            missing = await client.get(f"/consultations/{cid}")
+            wrong = await client.get(
+                f"/consultations/{cid}",
+                headers={"X-Consultation-Token": "wrong"},
+            )
+            ok = await client.get(
+                f"/consultations/{cid}",
+                headers={"X-Consultation-Token": token},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert missing.status_code == 403
+    assert wrong.status_code == 403
+    assert ok.status_code == 200
 
 
 # ── proposal draft split (plain headings, no markdown) ───────────────────────────

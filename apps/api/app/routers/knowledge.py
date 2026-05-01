@@ -24,9 +24,12 @@ from pydantic import BaseModel
 
 from app.auth.deps import require_admin
 from app.db.session import get_conn
+from app.kb import category_repository as cat_repo
 from app.kb import doc_repository as doc_repo
 from app.kb import embedder, parser
 from app.kb import repository as chunk_repo
+from app.kb.embedder import _is_daily_quota_exhausted
+from app.kb.parser import UNCATEGORIZED_CATEGORY
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,10 @@ async def _parse_embed_store(
     document_id: str,
     version_id: str,
 ) -> int:
-    """Parse → embed → store chunks. Returns chunk count."""
+    """Parse → embed → store chunks, then embed and store category vectors.
+
+    Returns chunk count.
+    """
     pages = parser.parse(file_data, filename)
     if not pages:
         raise HTTPException(status_code=422, detail="No text content found in file.")
@@ -72,6 +78,18 @@ async def _parse_embed_store(
         document_id=document_id,
         version_id=version_id,
     )
+
+    # Embed unique category names (excluding Uncategorized) and persist them
+    # so that retrieve_hybrid can use them for category pre-selection.
+    unique_categories = sorted(
+        {c.metadata["category"] for c in chunks if c.metadata["category"] != UNCATEGORIZED_CATEGORY}
+    )
+    if unique_categories:
+        cat_vectors = await embedder.embed_categories(unique_categories)
+        await cat_repo.upsert_category_vectors(
+            conn, document_id, version_id, unique_categories, cat_vectors
+        )
+
     return len(ids)
 
 
@@ -115,13 +133,18 @@ async def create_document(
         # Roll back provisional document/version rows.
         await doc_repo.archive_document(conn, document_id)
         if exc.code == 429:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Embedding quota limit reached. Please wait about 60 seconds "
-                    "and try uploading again."
-                ),
-            ) from exc
+            if _is_daily_quota_exhausted(exc):
+                detail = (
+                    "The Gemini API daily embedding quota has been exceeded. "
+                    "Please check your Gemini API plan and wait until the quota resets "
+                    "(usually around midnight Pacific time), then try uploading again."
+                )
+            else:
+                detail = (
+                    "The embedding provider returned a temporary rate limit "
+                    "(HTTP 429). Please wait about one minute and try uploading again."
+                )
+            raise HTTPException(status_code=503, detail=detail) from exc
         raise
     except Exception:
         await doc_repo.archive_document(conn, document_id)
@@ -229,13 +252,18 @@ async def upload_new_version(
     except ClientError as exc:
         await doc_repo.delete_version(conn, version_id)
         if exc.code == 429:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Embedding quota limit reached. Please wait about 60 seconds "
-                    "and try uploading again."
-                ),
-            ) from exc
+            if _is_daily_quota_exhausted(exc):
+                detail = (
+                    "The Gemini API daily embedding quota has been exceeded. "
+                    "Please check your Gemini API plan and wait until the quota resets "
+                    "(usually around midnight Pacific time), then try uploading again."
+                )
+            else:
+                detail = (
+                    "The embedding provider returned a temporary rate limit "
+                    "(HTTP 429). Please wait about one minute and try uploading again."
+                )
+            raise HTTPException(status_code=503, detail=detail) from exc
         raise
     except Exception:
         await doc_repo.delete_version(conn, version_id)

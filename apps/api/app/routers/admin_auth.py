@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.auth.deps import create_admin_token
 from app.settings import settings
 
 router = APIRouter(prefix="/admin", tags=["admin-auth"])
+_limiter = Limiter(key_func=get_remote_address)
 
 
 class LoginRequest(BaseModel):
@@ -26,7 +29,8 @@ class LoginResponse(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def admin_login(body: LoginRequest) -> LoginResponse:
+@_limiter.limit(lambda: settings.admin_login_rate_limit)
+async def admin_login(request: Request, body: LoginRequest) -> LoginResponse:  # noqa: ARG001
     """Verify the admin password and return a JWT access token."""
     if not secrets.compare_digest(body.password, settings.admin_password):
         raise HTTPException(

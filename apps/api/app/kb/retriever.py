@@ -1,11 +1,19 @@
 """RAG retrieval — vector similarity search over knowledge_base.
 
 Usage:
-    chunks = await retrieve(conn, query="...", top_k=5)
+    chunks = await retrieve_hybrid(conn, query="...", top_k=5)
 
-Metadata filters (all optional):
-    source_file  — limit to a specific uploaded document
-    category     — limit to a category (e.g. "policy")
+``retrieve_hybrid`` is the recommended entry point.  It:
+  1. Embeds the query once.
+  2. Finds the top-N most similar category names via ``kb_category_vectors``.
+  3. Runs a small chunk search for each shortlisted category.
+  4. Runs a small unfiltered fallback search to guard against category
+     mis-selection.
+  5. Deduplicates and re-ranks all candidates by cosine similarity, returning
+     the final ``top_k`` results.
+
+The lower-level ``retrieve`` function (single embedding, optional filters) is
+kept for backward-compatibility and testing.
 """
 
 from __future__ import annotations
@@ -19,27 +27,31 @@ from app.kb.embedder import embed_query
 
 logger = logging.getLogger(__name__)
 
+# ── Hybrid search tuning constants ────────────────────────────────────────────
+HYBRID_TOP_N_CATEGORIES = 2  # how many category buckets to search
+HYBRID_TOP_K_PER_CATEGORY = 2  # chunks retrieved per category
+HYBRID_TOP_K_FALLBACK = 1  # chunks from unfiltered fallback
+HYBRID_MIN_SIMILARITY = 0.45  # drop weak matches before they reach the prompt
 
-async def retrieve(
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+async def _retrieve_by_vector(
     conn: Connection,
-    query: str,
-    top_k: int = 5,
+    vector: list[float],
+    top_k: int,
     source_file: str | None = None,
     category: str | None = None,
 ) -> list[dict]:
-    """Return the top-k most similar chunks for the given query.
+    """Run a chunk similarity search with a pre-computed query vector.
 
-    Each result dict contains:
-        id, content, metadata (parsed JSONB), similarity (0-1 cosine)
+    Avoids re-embedding when the same vector is used for multiple searches
+    (e.g. in hybrid retrieval).
     """
-    vector = await embed_query(query)
     vector_str = "[" + ",".join(str(v) for v in vector) + "]"
 
-    # Build WHERE clauses.
     # Only return chunks from active document versions.
-    # Chunks with version_id IS NULL (uploaded before the document management
-    # system was introduced) are intentionally excluded — they should be
-    # re-uploaded through the Knowledge Base admin UI.
     conditions: list[str] = ["v.is_active = TRUE"]
     params: list = [vector_str, top_k]
 
@@ -68,23 +80,44 @@ async def retrieve(
         LIMIT $2
     """
 
-    # Increase probes so the ivfflat index scans enough clusters.
-    # This is a session-level hint and does not affect other queries.
     await conn.execute("SET ivfflat.probes = 10")
-
     rows = await conn.fetch(sql, *params)
-    results = []
-    for row in rows:
-        results.append(
-            {
-                "id": str(row["id"]),
-                "content": row["content"],
-                "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
-                "similarity": float(row["similarity"]),
-                "document_title": row["document_title"],
-            }
-        )
+    return [
+        {
+            "id": str(row["id"]),
+            "content": row["content"],
+            "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+            "similarity": float(row["similarity"]),
+            "document_title": row["document_title"],
+        }
+        for row in rows
+        if float(row["similarity"]) >= HYBRID_MIN_SIMILARITY
+    ]
 
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+
+async def retrieve(
+    conn: Connection,
+    query: str,
+    top_k: int = 5,
+    source_file: str | None = None,
+    category: str | None = None,
+) -> list[dict]:
+    """Return the top-k most similar chunks for the given query.
+
+    Simple single-pass search (embeds query, optional metadata filters).
+    Prefer ``retrieve_hybrid`` for better precision in production.
+
+    Each result dict contains:
+        id, content, metadata (parsed JSONB), similarity (0-1 cosine),
+        document_title
+    """
+    vector = await embed_query(query)
+    results = await _retrieve_by_vector(
+        conn, vector, top_k, source_file=source_file, category=category
+    )
     logger.debug(
         "RAG retrieve query=%r top_k=%d filters={source_file=%r, category=%r} → %d results",
         query[:60],
@@ -94,6 +127,79 @@ async def retrieve(
         len(results),
     )
     return results
+
+
+async def retrieve_hybrid(
+    conn: Connection,
+    query: str,
+    top_k: int = 4,
+    source_file: str | None = None,
+) -> list[dict]:
+    """Hybrid RAG retrieval combining category-filtered and unfiltered searches.
+
+    Algorithm
+    ---------
+    1. Embed the query once.
+    2. Find the top-N most similar category names from ``kb_category_vectors``
+       (only active versions are considered).
+    3. For each shortlisted category run a small chunk search
+       (HYBRID_TOP_K_PER_CATEGORY results each).
+    4. Run one unfiltered fallback search (HYBRID_TOP_K_FALLBACK results)
+       to guard against category mis-selection.
+    5. Deduplicate by chunk id, re-rank by cosine similarity, return top_k.
+    """
+    from app.kb.category_repository import find_similar_categories
+
+    vector = await embed_query(query)
+
+    # ── 2. Find top-N categories ──────────────────────────────────────────────
+    categories = await find_similar_categories(conn, vector, top_n=HYBRID_TOP_N_CATEGORIES)
+    logger.debug(
+        "retrieve_hybrid: query=%r top_categories=%r",
+        query[:60],
+        categories,
+    )
+
+    # ── 3. Category-filtered searches ─────────────────────────────────────────
+    all_chunks: list[dict] = []
+    for cat in categories:
+        chunks = await _retrieve_by_vector(
+            conn,
+            vector,
+            top_k=HYBRID_TOP_K_PER_CATEGORY,
+            source_file=source_file,
+            category=cat,
+        )
+        all_chunks.extend(chunks)
+
+    # ── 4. Unfiltered fallback ────────────────────────────────────────────────
+    fallback = await _retrieve_by_vector(
+        conn,
+        vector,
+        top_k=HYBRID_TOP_K_FALLBACK,
+        source_file=source_file,
+        category=None,
+    )
+    all_chunks.extend(fallback)
+
+    # ── 5. Deduplicate + re-rank ──────────────────────────────────────────────
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for chunk in sorted(all_chunks, key=lambda c: c["similarity"], reverse=True):
+        if chunk["id"] not in seen:
+            seen.add(chunk["id"])
+            unique.append(chunk)
+        if len(unique) >= top_k:
+            break
+
+    logger.debug(
+        "retrieve_hybrid query=%r top_k=%d categories=%r → %d results",
+        query[:60],
+        top_k,
+        categories,
+        len(unique),
+    )
+    return unique
 
 
 def format_context(chunks: list[dict]) -> str:

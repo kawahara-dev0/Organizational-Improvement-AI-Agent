@@ -191,9 +191,9 @@ async def purge_old_versions(
     Versions are ranked newest-first by version_no; the `keep` newest rows are
     preserved regardless of is_active status.
 
-    knowledge_base rows must be deleted explicitly before the version rows
-    because the version_id FK is defined ON DELETE SET NULL (not CASCADE):
-    skipping this step would turn old chunks into orphan/legacy rows.
+    knowledge_base rows are deleted explicitly before the version rows so
+    purge order is obvious; FKs now use ON DELETE CASCADE (migration 005),
+    so skipping the DELETE would still remove chunks when versions are deleted.
 
     Returns the number of version rows deleted.
     """
@@ -231,7 +231,8 @@ async def list_chunks_for_version(conn: Connection, version_id: str) -> list[dic
         SELECT id::text,
                (metadata->>'chunk_index')::int AS chunk_index,
                content,
-               metadata->>'page_number' AS page_number
+               metadata->>'page_number' AS page_number,
+               metadata->>'category'    AS category
         FROM knowledge_base
         WHERE version_id = $1::uuid
         ORDER BY (metadata->>'chunk_index')::int

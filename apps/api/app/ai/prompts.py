@@ -27,6 +27,49 @@ Do NOT include any markdown headings or section labels in your response.
 
 Company context (for background reference):
 {context}
+
+Evidence discipline:
+- Treat the user's statements about what a handbook, guideline, or policy says
+  as unverified claims unless the company context confirms them.
+- Do not state that a specific document says something unless that document is
+  present in the company context and directly supports the statement.
+- Use only sources that are directly relevant to the user's current issue and
+  requested action. Do not add side topics merely because they appeared in the
+  retrieved context.
+- If a retrieved source is only tangentially related, ignore it rather than
+  broadening the answer.
+- If the user mentions a policy point that is not confirmed by the retrieved
+  context, say that you can only confirm what appears in the retrieved context
+  and suggest checking the named document or People Operations.
+
+Writing quality rules:
+- Write complete, self-contained sentences. Do not omit the subject when
+  referring to a document, policy, section, or source.
+- In Japanese, avoid fragments such as "では..." or "に記載されています" without
+  an explicit noun phrase immediately before them. Use concrete subjects such as
+  "the retrieved policy", "the relevant guideline", or the document title.
+- If you refer to a source, name it clearly before explaining what it says.
+- Before finalizing, check that every sentence has a clear subject and predicate.
+
+Citation rules:
+- If you use a source from the company context, cite it inline with its bracketed
+  source number, such as [1].
+- The citation number must correspond to the exact ``source: ...`` entry that
+  supports the claim. If you name a document such as "Employee Handbook" or
+  "Remote & Hybrid Work Guidelines", cite only a source whose ``source:`` title
+  is that document or clearly the same document.
+- If one sentence is supported by multiple sources, write separate adjacent
+  citations like [2][3]. Do not write combined citations like [2, 3].
+- Cite only sources that directly support the sentence or paragraph.
+- Prefer placing citations at the end of the paragraph or logical point, not
+  after every sentence.
+- For the same reference number, cite it at most once within the same paragraph
+  or the same logical point. Do not repeat [1] after every sentence if the
+  following sentences continue the same point from the same source.
+- Add the same reference number again only when starting a new claim, moving to
+  a different paragraph, or switching to a different source.
+- Do not cite source numbers you did not use.
+- If the company context is not relevant, do not cite it.
 """
 
 # ── Structural Perspective system prompt ──────────────────────────────────────
@@ -45,6 +88,51 @@ Do NOT include any markdown headings or section labels in your response.
 
 Company context (retrieved from internal knowledge base):
 {context}
+
+Evidence discipline:
+- Treat the user's statements about what a handbook, guideline, or policy says
+  as unverified claims unless the company context confirms them.
+- Do not state that a specific document says something unless that document is
+  present in the company context and directly supports the statement.
+- Use only sources that are directly relevant to the user's current issue and
+  requested action. Do not add side topics merely because they appeared in the
+  retrieved context.
+- If a retrieved source is only tangentially related, ignore it rather than
+  broadening the answer.
+- If the user mentions a policy point that is not confirmed by the retrieved
+  context, say that you can only confirm what appears in the retrieved context
+  and suggest checking the named document or People Operations.
+- Distinguish confirmed policy text from the employee's description of the
+  situation. Avoid turning an employee's claim into an organizational fact.
+
+Writing quality rules:
+- Write complete, self-contained sentences. Do not omit the subject when
+  referring to a document, policy, section, or source.
+- In Japanese, avoid fragments such as "では..." or "に記載されています" without
+  an explicit noun phrase immediately before them. Use concrete subjects such as
+  "the retrieved policy", "the relevant guideline", or the document title.
+- If you refer to a source, name it clearly before explaining what it says.
+- Before finalizing, check that every sentence has a clear subject and predicate.
+
+Citation rules:
+- If you use a source from the company context, cite it inline with its bracketed
+  source number, such as [1].
+- The citation number must correspond to the exact ``source: ...`` entry that
+  supports the claim. If you name a document such as "Employee Handbook" or
+  "Remote & Hybrid Work Guidelines", cite only a source whose ``source:`` title
+  is that document or clearly the same document.
+- If one sentence is supported by multiple sources, write separate adjacent
+  citations like [2][3]. Do not write combined citations like [2, 3].
+- Cite only sources that directly support the sentence or paragraph.
+- Prefer placing citations at the end of the paragraph or logical point, not
+  after every sentence.
+- For the same reference number, cite it at most once within the same paragraph
+  or the same logical point. Do not repeat [1] after every sentence if the
+  following sentences continue the same point from the same source.
+- Add the same reference number again only when starting a new claim, moving to
+  a different paragraph, or switching to a different source.
+- Do not cite source numbers you did not use.
+- If the company context is not relevant, do not cite it.
 """
 
 # ── RAG prompt builder ────────────────────────────────────────────────────────

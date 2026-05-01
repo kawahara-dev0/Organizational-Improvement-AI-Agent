@@ -34,6 +34,58 @@ jobs:
       # - name: mypy
       #   run: uv run mypy .
 
+  # ── Python tests (pytest + local pgvector DB) ─────────────────────────────
+  test-api:
+    name: Python tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: oiagent
+          POSTGRES_USER: oiagent
+          POSTGRES_PASSWORD: oiagent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oiagent -d oiagent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://oiagent:oiagent@localhost:5432/oiagent
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Apply database migrations
+        run: |
+          for f in ../../db/migrations/*.sql; do
+            echo "Applying $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Pytest
+        run: uv run pytest -q
+
   # ── Frontend (ESLint + TypeScript) ───────────────────────────────────────
   lint-web:
     name: Frontend static analysis

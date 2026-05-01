@@ -22,7 +22,7 @@ import re
 from typing import Literal
 
 from asyncpg import Connection
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -40,12 +40,14 @@ from app.consultations.repository import (
     append_message,
     create_consultation,
     get_consultation,
+    set_consultation_department,
     submit_consultation,
     update_feedback,
     update_metadata,
+    verify_consultation_access,
 )
 from app.db.session import get_conn
-from app.kb.retriever import build_sources, format_context, retrieve
+from app.kb.retriever import build_sources, format_context, retrieve_hybrid
 from app.settings import settings
 from app.utils.pii import mask_pii
 
@@ -66,6 +68,91 @@ def _is_quota_error(exc: Exception) -> bool:
     return name in _QUOTA_ERROR_NAMES or "429" in msg or "RESOURCE_EXHAUSTED" in msg
 
 
+_SOURCE_CITATION_RE = re.compile(r"\[(\d+)\]")
+_SOURCE_CITATION_LIST_RE = re.compile(r"\[((?:\d+\s*,\s*)+\d+)\]")
+_DUPLICATE_ADJACENT_CITATION_RE = re.compile(r"(\[(\d+)\])(?:\[\2\])+")
+
+
+def _normalize_source_citations(reply: str) -> str:
+    """Convert combined citations like ``[2, 3]`` into ``[2][3]``."""
+
+    def _replace(match: re.Match) -> str:
+        numbers = [n.strip() for n in match.group(1).split(",")]
+        return "".join(f"[{n}]" for n in numbers if n)
+
+    return _SOURCE_CITATION_LIST_RE.sub(_replace, reply)
+
+
+def _collapse_duplicate_adjacent_citations(reply: str) -> str:
+    """Collapse adjacent duplicate display citations, e.g. ``[2][2]`` → ``[2]``."""
+    return _DUPLICATE_ADJACENT_CITATION_RE.sub(r"\1", reply)
+
+
+def _move_citations_to_paragraph_end(reply: str) -> str:
+    """Move unique citation numbers to the end of each blank-line-delimited block."""
+    blocks = reply.split("\n\n")
+
+    def _move_block(block: str) -> str:
+        citations: list[str] = []
+
+        def _collect(match: re.Match) -> str:
+            citation_no = match.group(1)
+            if citation_no not in citations:
+                citations.append(citation_no)
+            return ""
+
+        cleaned = _SOURCE_CITATION_RE.sub(_collect, block)
+        cleaned = re.sub(r"\s+([。、，,.!?！？])", r"\1", cleaned)
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+        if not cleaned or not citations:
+            return cleaned
+        return f"{cleaned} {''.join(f'[{n}]' for n in citations)}"
+
+    return "\n\n".join(_move_block(block) for block in blocks)
+
+
+def _source_titles_for_citations(reply: str, chunks: list[dict]) -> dict[int, int]:
+    """Map model-cited chunk numbers to the displayed source number.
+
+    The prompt numbers individual chunks, while the UI groups references by
+    document. This keeps displayed footnotes aligned with the inline citations.
+    """
+    title_to_display_index: dict[str, int] = {}
+    chunk_to_display_index: dict[int, int] = {}
+
+    for match in _SOURCE_CITATION_RE.finditer(reply):
+        chunk_no = int(match.group(1))
+        if not 1 <= chunk_no <= len(chunks) or chunk_no in chunk_to_display_index:
+            continue
+
+        chunk = chunks[chunk_no - 1]
+        meta = chunk.get("metadata", {})
+        title = chunk.get("document_title") or meta.get("source_file", "unknown")
+        if title not in title_to_display_index:
+            title_to_display_index[title] = len(title_to_display_index) + 1
+        chunk_to_display_index[chunk_no] = title_to_display_index[title]
+
+    return chunk_to_display_index
+
+
+def _references_used_by_reply(reply: str, chunks: list[dict]) -> tuple[str, list[dict]]:
+    """Return reply with display-aligned citations and only cited chunks."""
+    reply = _normalize_source_citations(reply)
+    citation_map = _source_titles_for_citations(reply, chunks)
+    if not citation_map:
+        return reply, []
+
+    def _replace(match: re.Match) -> str:
+        chunk_no = int(match.group(1))
+        display_no = citation_map.get(chunk_no)
+        return f"[{display_no}]" if display_no is not None else match.group(0)
+
+    cited_chunks = [chunks[chunk_no - 1] for chunk_no in citation_map]
+    display_reply = _SOURCE_CITATION_RE.sub(_replace, reply)
+    display_reply = _collapse_duplicate_adjacent_citations(display_reply)
+    return _move_citations_to_paragraph_end(display_reply), cited_chunks
+
+
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 
@@ -79,6 +166,7 @@ class SourceRef(BaseModel):
     title: str
     primary_page: int | None = None
     supplementary_pages: list[int] = []
+    sections: list[str] = []
 
 
 class ChatResponse(BaseModel):
@@ -104,6 +192,7 @@ class CreateRequest(BaseModel):
 
 class CreateResponse(BaseModel):
     consultation_id: str
+    access_token: str
 
 
 class UpdateDepartmentRequest(BaseModel):
@@ -134,6 +223,16 @@ class SubmitResponse(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+async def _require_session_access(
+    conn: Connection,
+    consultation_id: str,
+    access_token: str | None,
+) -> None:
+    """Protect consultation sessions from UUID-only access."""
+    if not await verify_consultation_access(conn, consultation_id, access_token or ""):
+        raise HTTPException(status_code=403, detail="Invalid consultation access token")
 
 
 def _messages_to_lc(messages: list[dict]) -> list[ChatMessage]:
@@ -183,7 +282,6 @@ async def _extract_and_persist_metadata(
         await update_metadata(
             conn,
             consultation_id,
-            department=extracted.get("department"),
             category=extracted.get("category"),
             severity=int(extracted.get("severity", 0)),
         )
@@ -211,35 +309,33 @@ async def create_session(
     conn: Connection = Depends(get_conn),
 ) -> CreateResponse:
     """Create a new consultation session and return its ID."""
-    consultation_id = await create_consultation(conn, department=body.department)
-    return CreateResponse(consultation_id=consultation_id)
+    consultation_id, access_token = await create_consultation(conn, department=body.department)
+    return CreateResponse(consultation_id=consultation_id, access_token=access_token)
 
 
 @router.patch("/{consultation_id}/department", status_code=204)
 async def update_department(
     consultation_id: str,
     body: UpdateDepartmentRequest,
+    x_consultation_token: str | None = Header(default=None),
     conn: Connection = Depends(get_conn),
 ) -> None:
     """Update the department field of an existing consultation."""
+    await _require_session_access(conn, consultation_id, x_consultation_token)
     session = await get_consultation(conn, consultation_id)
     if not session:
         raise HTTPException(status_code=404, detail="Consultation not found")
-    await update_metadata(
-        conn,
-        consultation_id,
-        department=body.department,
-        category=session.get("category"),
-        severity=session.get("severity") or 0,
-    )
+    await set_consultation_department(conn, consultation_id, body.department)
 
 
 @router.get("/{consultation_id}")
 async def get_session(
     consultation_id: str,
+    x_consultation_token: str | None = Header(default=None),
     conn: Connection = Depends(get_conn),
 ) -> dict:
     """Retrieve full consultation details including message history."""
+    await _require_session_access(conn, consultation_id, x_consultation_token)
     session = await get_consultation(conn, consultation_id)
     if not session:
         raise HTTPException(status_code=404, detail="Consultation not found")
@@ -252,6 +348,7 @@ async def chat(
     request: Request,
     consultation_id: str,
     body: ChatRequest,
+    x_consultation_token: str | None = Header(default=None),
     conn: Connection = Depends(get_conn),
 ) -> ChatResponse:
     """Process a chat turn.
@@ -261,6 +358,7 @@ async def chat(
         - invoke_rag            : 1 call  — always required (main response)
         - metadata extraction   : 1 call  — only every METADATA_EXTRACTION_INTERVAL turns
     """
+    await _require_session_access(conn, consultation_id, x_consultation_token)
     session = await get_consultation(conn, consultation_id)
     if not session:
         raise HTTPException(status_code=404, detail="Consultation not found")
@@ -273,7 +371,7 @@ async def chat(
     retrieved_chunks: list[dict] = []
     if settings.rag_enabled:
         try:
-            retrieved_chunks = await retrieve(conn, query=body.content, top_k=5)
+            retrieved_chunks = await retrieve_hybrid(conn, query=body.content, top_k=4)
             context_text = format_context(retrieved_chunks)
         except Exception as exc:  # noqa: BLE001
             if _is_quota_error(exc):
@@ -314,19 +412,20 @@ async def chat(
             ) from exc
         raise
 
+    reply_text, cited_chunks = _references_used_by_reply(response.content, retrieved_chunks)
+    sources = [SourceRef(**s) for s in build_sources(cited_chunks)]
+
     # 4. Persist assistant reply (with mode so UI can restore badges on reload)
-    await append_message(conn, consultation_id, "assistant", response.content, mode=body.mode)
+    await append_message(conn, consultation_id, "assistant", reply_text, mode=body.mode)
 
     # 5. Metadata extraction — only every N assistant turns (best-effort, non-blocking)
     updated_session = await get_consultation(conn, consultation_id)
     if updated_session and _should_extract_metadata(updated_session["messages"]):
         await _extract_and_persist_metadata(conn, consultation_id, updated_session["messages"])
 
-    sources = [SourceRef(**s) for s in build_sources(retrieved_chunks)]
-
     return ChatResponse(
         consultation_id=consultation_id,
-        reply=response.content,
+        reply=reply_text,
         provider_used=response.provider_used.value,
         mode=body.mode,
         sources=sources,
@@ -435,7 +534,7 @@ async def _build_proposal_draft(
     if settings.rag_enabled:
         try:
             last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-            retrieved = await retrieve(conn, query=last_user, top_k=5)
+            retrieved = await retrieve_hybrid(conn, query=last_user, top_k=4)
             context_text = format_context(retrieved)
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG retrieval failed for proposal — proceeding: %s", exc)
@@ -475,6 +574,7 @@ async def _build_proposal_draft(
 async def draft_proposal(
     consultation_id: str,
     body: DraftRequest | None = None,
+    x_consultation_token: str | None = Header(default=None),
     conn: Connection = Depends(get_conn),
 ) -> DraftResponse:
     """Generate a proposal preview for user review.
@@ -482,6 +582,7 @@ async def draft_proposal(
     Does NOT write to the DB. The user reviews the draft and then calls
     POST /{id}/submit to confirm and persist.
     """
+    await _require_session_access(conn, consultation_id, x_consultation_token)
     session = await get_consultation(conn, consultation_id)
     if not session:
         raise HTTPException(status_code=404, detail="Consultation not found")
@@ -499,6 +600,7 @@ async def draft_proposal(
 async def submit(
     consultation_id: str,
     body: SubmitRequest,
+    x_consultation_token: str | None = Header(default=None),
     conn: Connection = Depends(get_conn),
 ) -> SubmitResponse:
     """Atomically persist the confirmed submission (UC-2 final step).
@@ -506,6 +608,7 @@ async def submit(
     The client passes the summary and proposal text from the draft preview,
     plus optional contact info. A single UPDATE sets is_submitted=true.
     """
+    await _require_session_access(conn, consultation_id, x_consultation_token)
     session = await get_consultation(conn, consultation_id)
     if not session:
         raise HTTPException(status_code=404, detail="Consultation not found")
@@ -531,9 +634,11 @@ async def submit(
 async def feedback(
     consultation_id: str,
     body: FeedbackRequest,
+    x_consultation_token: str | None = Header(default=None),
     conn: Connection = Depends(get_conn),
 ) -> FeedbackResponse:
     """Record a like (1), neutral (0), or dislike (-1) for a consultation."""
+    await _require_session_access(conn, consultation_id, x_consultation_token)
     session = await get_consultation(conn, consultation_id)
     if not session:
         raise HTTPException(status_code=404, detail="Consultation not found")

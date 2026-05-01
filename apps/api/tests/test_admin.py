@@ -54,12 +54,13 @@ async def _insert_submitted(
     await conn.execute(
         """
         INSERT INTO consultations
-            (id, department, category, severity, is_submitted,
+            (id, access_token, department, category, severity, is_submitted,
              summary, proposal, admin_status)
         VALUES
-            ($1, $2, $3, $4, TRUE, $5, $6, 'New')
+            ($1, $2, $3, $4, $5, TRUE, $6, $7, 'New')
         """,
         row_id,
+        f"test-token-{row_id}",
         department,
         category,
         severity,
@@ -73,8 +74,9 @@ async def _insert_unsubmitted(conn) -> str:
     """Insert a non-submitted consultation row and return its id."""
     row_id = str(uuid.uuid4())
     await conn.execute(
-        "INSERT INTO consultations (id) VALUES ($1)",
+        "INSERT INTO consultations (id, access_token) VALUES ($1, $2)",
         row_id,
+        f"test-token-{row_id}",
     )
     return row_id
 
@@ -103,6 +105,18 @@ async def test_admin_login_wrong_password() -> None:
         resp = await client.post("/admin/login", json={"password": "wrong-password"})
 
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_admin_login_rate_limit_returns_429() -> None:
+    """Admin login must rate-limit repeated password attempts."""
+    with patch("app.routers.admin_auth.settings.admin_login_rate_limit", "1/minute"):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            first = await client.post("/admin/login", json={"password": "wrong-password"})
+            second = await client.post("/admin/login", json={"password": "wrong-password"})
+
+    assert first.status_code == 401
+    assert second.status_code == 429
 
 
 # ── Auth guard ─────────────────────────────────────────────────────────────

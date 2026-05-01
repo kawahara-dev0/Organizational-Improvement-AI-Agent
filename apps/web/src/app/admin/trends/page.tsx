@@ -423,8 +423,31 @@ export default function TrendsPage() {
             <button
               onClick={() => void generateSummary()}
               disabled={summaryLoading || !data?.heatmap.length}
-              className="rounded border border-zinc-600 px-4 py-1.5 text-sm text-zinc-200 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex items-center gap-2 rounded border border-zinc-600 px-4 py-1.5 text-sm text-zinc-200 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {summaryLoading && (
+                <svg
+                  className="h-4 w-4 animate-spin"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                  />
+                </svg>
+              )}
               {summaryLoading ? "Generating…" : "Generate Brief"}
             </button>
           </div>
@@ -446,6 +469,33 @@ export default function TrendsPage() {
           <p className="text-sm text-zinc-600">
             Click &quot;Generate Brief&quot; to produce an AI-written management summary.
           </p>
+        )}
+
+        {summaryLoading && (
+          <div className="flex items-center gap-2 text-sm text-zinc-400">
+            <svg
+              className="h-4 w-4 animate-spin text-zinc-300"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+              />
+            </svg>
+            <span>Generating management brief…</span>
+          </div>
         )}
       </section>
     </div>

@@ -21,6 +21,7 @@ interface Chunk {
   chunk_index: number | null;
   content: string;
   page_number: string | null;
+  category: string | null;
 }
 
 interface Document {
@@ -44,12 +45,21 @@ function token() {
 
 // ── Sub-component: Document row ───────────────────────────────────────────────
 
+type FlashTone = "success" | "warning" | "error";
+
+interface PageFlash {
+  tone: FlashTone;
+  text: string;
+}
+
 function DocumentRow({
   doc,
   onRefresh,
+  onDocumentDeleted,
 }: {
   doc: Document;
   onRefresh: () => void;
+  onDocumentDeleted?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<Document | null>(null);
@@ -153,6 +163,7 @@ function DocumentRow({
         `v${d.version_no} uploaded — ${d.chunks_created} chunks.`,
       );
       if (newVersionRef.current) newVersionRef.current.value = "";
+      setNewVersionFileName("");
       await loadDetail();
       onRefresh();
     } catch {
@@ -174,6 +185,7 @@ function DocumentRow({
         setRowError(d.detail ?? "Delete failed.");
         return;
       }
+      onDocumentDeleted?.();
       onRefresh();
     } catch {
       setRowError("Network error.");
@@ -370,9 +382,32 @@ function DocumentRow({
                   </span>
                   <button
                     type="submit"
-                    disabled={uploading}
-                    className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                    disabled={uploading || newVersionFileName.length === 0}
+                    className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
                   >
+                    {uploading && (
+                      <svg
+                        className="h-3.5 w-3.5 animate-spin"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                        />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                        />
+                      </svg>
+                    )}
                     {uploading ? "Uploading…" : "Upload"}
                   </button>
                 </form>
@@ -396,9 +431,16 @@ function DocumentRow({
                         <span className="shrink-0 text-zinc-500">
                           #{c.chunk_index ?? "?"}
                         </span>
-                        <span className="text-zinc-300 leading-relaxed">
-                          {c.content}
-                        </span>
+                        <div className="min-w-0 flex-1">
+                          {c.category && (
+                            <span className="mb-1 inline-block rounded bg-blue-500/20 px-1.5 py-0.5 text-[10px] font-medium text-blue-300">
+                              {c.category}
+                            </span>
+                          )}
+                          <p className="leading-relaxed text-zinc-300">
+                            {c.content}
+                          </p>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -422,14 +464,15 @@ export default function KnowledgeBasePage() {
   // orphan chunks
   const [orphanCount, setOrphanCount] = useState<number | null>(null);
   const [cleaningOrphans, setCleaningOrphans] = useState(false);
-  const [orphanMsg, setOrphanMsg] = useState<string | null>(null);
 
   // create document form
   const [showCreate, setShowCreate] = useState(false);
   const [createTitle, setCreateTitle] = useState("");
   const [createCategory, setCreateCategory] = useState("");
   const [creating, setCreating] = useState(false);
-  const [createMsg, setCreateMsg] = useState<string | null>(null);
+
+  /** Single status line: only the most recent user-facing action. */
+  const [flash, setFlash] = useState<PageFlash | null>(null);
   const createFileRef = useRef<HTMLInputElement>(null);
   const [createFileName, setCreateFileName] = useState("");
 
@@ -464,21 +507,24 @@ export default function KnowledgeBasePage() {
   const handleCleanOrphans = async () => {
     if (!confirm(`Delete ${String(orphanCount)} legacy chunks? This cannot be undone.`)) return;
     setCleaningOrphans(true);
-    setOrphanMsg(null);
+    setFlash(null);
     try {
       const res = await fetch(`${API_URL}/knowledge/orphan-chunks`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token()}` },
       });
       if (!res.ok) {
-        setOrphanMsg("Failed to delete legacy chunks.");
+        setFlash({ tone: "error", text: "Failed to delete legacy chunks." });
         return;
       }
       const d = (await res.json()) as { deleted: number };
       setOrphanCount(0);
-      setOrphanMsg(`Deleted ${String(d.deleted)} legacy chunks.`);
+      setFlash({
+        tone: "success",
+        text: `Deleted ${String(d.deleted)} legacy chunk${d.deleted === 1 ? "" : "s"}.`,
+      });
     } catch {
-      setOrphanMsg("Network error.");
+      setFlash({ tone: "error", text: "Network error." });
     } finally {
       setCleaningOrphans(false);
     }
@@ -493,7 +539,7 @@ export default function KnowledgeBasePage() {
     const file = createFileRef.current?.files?.[0];
     if (!createTitle.trim() || !file) return;
     setCreating(true);
-    setCreateMsg(null);
+    setFlash(null);
     setError(null);
     const form = new FormData();
     form.append("title", createTitle.trim());
@@ -517,7 +563,10 @@ export default function KnowledgeBasePage() {
         return;
       }
       const d = (await res.json()) as { chunks_created: number };
-      setCreateMsg(`Document created — ${d.chunks_created} chunks embedded.`);
+      setFlash({
+        tone: "success",
+        text: `Document created — ${d.chunks_created} chunk${d.chunks_created === 1 ? "" : "s"} embedded.`,
+      });
       setCreateTitle("");
       setCreateCategory("");
       if (createFileRef.current) createFileRef.current.value = "";
@@ -540,12 +589,15 @@ export default function KnowledgeBasePage() {
           version of the source file.
         </p>
         {!showCreate && (
-          <button
-            onClick={() => setShowCreate(true)}
-            className="mt-3 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500"
-          >
-            + New Document
-          </button>
+            <button
+              onClick={() => {
+                setFlash(null);
+                setShowCreate(true);
+              }}
+              className="mt-3 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500"
+            >
+              + New Document
+            </button>
         )}
       </div>
 
@@ -597,14 +649,38 @@ export default function KnowledgeBasePage() {
               disabled={
                 creating || createTitle.trim().length === 0 || createFileName.length === 0
               }
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
             >
+              {creating && (
+                <svg
+                  className="h-4 w-4 animate-spin"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                  />
+                </svg>
+              )}
               {creating ? "Uploading…" : "Create & Upload"}
             </button>
             <button
               type="button"
               onClick={() => {
                 setShowCreate(false);
+                setFlash(null);
                 setCreateTitle("");
                 setCreateCategory("");
                 setCreateFileName("");
@@ -640,21 +716,21 @@ export default function KnowledgeBasePage() {
             >
               {cleaningOrphans ? "Deleting…" : "Delete Legacy Chunks"}
             </button>
-            {orphanMsg && (
-              <span className="text-xs text-yellow-300">{orphanMsg}</span>
-            )}
           </div>
         </div>
       )}
-      {orphanCount === 0 && orphanMsg && (
-        <p className="max-w-xl rounded border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-300">
-          {orphanMsg}
-        </p>
-      )}
 
-      {createMsg && (
-        <p className="max-w-xl rounded border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-300">
-          {createMsg}
+      {flash && (
+        <p
+          className={`max-w-xl rounded border px-3 py-2 text-sm ${
+            flash.tone === "success"
+              ? "border-green-500/30 bg-green-500/10 text-green-300"
+              : flash.tone === "warning"
+                ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-200"
+                : "border-red-500/30 bg-red-500/10 text-red-400"
+          }`}
+        >
+          {flash.text}
         </p>
       )}
       {error && (
@@ -674,7 +750,14 @@ export default function KnowledgeBasePage() {
       {/* Document list */}
       <div className="flex flex-col gap-3">
         {documents.map((doc) => (
-          <DocumentRow key={doc.id} doc={doc} onRefresh={() => void fetchDocuments()} />
+          <DocumentRow
+            key={doc.id}
+            doc={doc}
+            onRefresh={() => void fetchDocuments()}
+            onDocumentDeleted={() =>
+              setFlash({ tone: "success", text: "Document deleted." })
+            }
+          />
         ))}
       </div>
     </div>

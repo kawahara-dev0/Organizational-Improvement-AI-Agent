@@ -36,10 +36,10 @@
 **Deliverables:**
 
 - Add `db` service to `docker-compose.yml`: `postgres:16` with the `pgvector` extension (using `pgvector/pgvector:pg16` image).
-- SQL migrations for `knowledge_base` (768-dim vector), `departments`, `consultations`; applied via `docker compose exec db psql ...` or a migration tool container.
+- SQL migrations for `knowledge_base` (768-dim vector), `kb_documents`, `kb_document_versions`, `kb_category_vectors`, `departments`, `consultations`; applied via `docker compose exec db psql ...` or a migration tool container.
 - RLS policies: **public/employee** vs **admin** access boundaries (placeholder until auth is wired in Step 10).
 - Seed script for sample `departments`.
-- **Verify:** `docker compose up db` starts cleanly; running the migrations populates all three tables.
+- **Verify:** `docker compose up db` starts cleanly; running the migrations creates the KB, consultation, department, and category-vector tables.
 
 ---
 
@@ -77,10 +77,12 @@
 
 **Deliverables:**
 
-- File parsers (PDF/Excel/DOCX) and chunking strategy (with metadata: source file, page).
-- Embedding pipeline using the same model as query-time RAG.
+- File parsers (PDF/Excel/DOCX) and chunking strategy (with metadata: source file, page, category, chunk index).
+- Per-chunk category markers: standalone `[[KB:Section Name]]` lines set the category for following chunks, carry across chunk/page boundaries, are stripped from chunk content, and default to `Front matter` before the first marker or `Uncategorized` when a document has no markers. PDF parsing normalizes markers split by line wrapping or concatenated with surrounding text.
+- Embedding pipeline using the same model family as query-time RAG, with client-side rate limiting, 429 backoff, and daily-quota exhaustion detection for clearer upload errors.
 - Admin-only API routes: ingest files into **`kb_documents` / `kb_document_versions`** with chunks in `knowledge_base` linked by `document_id` / `version_id` (active version only for RAG). Prefer **re-upload / new version** over editing individual chunks in the UI.
-- **Version retention**: after each successful upload, automatically purge versions (and their chunks) beyond the newest **3** per document (`VERSION_RETENTION = 3` in `doc_repository.py`). Chunks must be deleted before the version row to avoid orphan rows; run `pytest tests/test_knowledge.py` to verify.
+- Store one category embedding per unique category/document version in **`kb_category_vectors`** (excluding `Uncategorized`) for hybrid RAG category selection.
+- **Version retention**: after each successful upload, automatically purge versions (and their chunks) beyond the newest **3** per document (`VERSION_RETENTION = 3` in `doc_repository.py`). `knowledge_base` FKs use `ON DELETE CASCADE` so document/version deletion removes linked chunks instead of creating orphan rows; run `pytest tests/test_knowledge.py` to verify.
 - **Verify:** Upload a sample PDF via the admin UI or `curl`; confirm document, version, and chunks exist in the `db` container.
 
 ---
@@ -91,7 +93,7 @@
 
 **Deliverables:**
 
-- Vector search over `knowledge_base` with metadata filters if needed; exclude chunks that are not tied to an **active** `kb_document_versions` row (and exclude legacy rows without `version_id` once migration is complete).
+- Hybrid vector search over `knowledge_base`: embed the query once, select top category names from `kb_category_vectors`, run small category-filtered chunk searches, run a small unfiltered fallback search, deduplicate candidates, and rerank by chunk similarity. Exclude chunks that are not tied to an **active** `kb_document_versions` row (and exclude legacy rows without `version_id` once migration is complete).
 - **Source references** for the UI: build a grouped list (document title, primary page, supplementary pages) from retrieved chunks so citations match inline `[n]` markers in the assistant text.
 - Separate prompt templates for **"Personal Advice"** (empathetic, employee-focused) and **"Structural Perspective"** (systemic, management-focused). Both templates instruct the AI to reply in the same language as the user's message and to omit markdown headings from the response.
 - Integration tests against a small fixture index (including source-grouping behaviour).
@@ -186,7 +188,7 @@
 **Deliverables:**
 
 - CRUD for departments.
-- Knowledge Base UI: **documents and versions** (new document, new version upload, activate/deactivate semantics via backend). **No** per-chunk text editing in the UI; optional admin action to **count/delete legacy orphan chunks** (`version_id` NULL) if present after migrations.
+- Knowledge Base UI: **documents and versions** (new document, new version upload, active-version semantics via backend). Show generated chunks and their categories for inspection, but provide **no** per-chunk text editing in the UI. Optional admin action to **count/delete legacy orphan chunks** (`version_id` NULL) if present after migrations.
 - **Verify:** Upload and delete a document (or version) from the admin UI; confirm `kb_documents` / `kb_document_versions` / `knowledge_base` state in the DB.
 
 ---

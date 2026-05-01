@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import uuid
 
 from asyncpg import Connection
@@ -13,17 +14,39 @@ from app.utils.crypto import decrypt_messages, encrypt_messages, is_encryption_e
 async def create_consultation(
     conn: Connection,
     department: str | None = None,
-) -> str:
-    """Insert a new consultation row and return its UUID."""
+) -> tuple[str, str]:
+    """Insert a new consultation row and return (UUID, access token)."""
     row_id = str(uuid.uuid4())
+    access_token = secrets.token_urlsafe(32)
     await conn.execute(
         """
-        INSERT INTO consultations (id, department) VALUES ($1, $2)
+        INSERT INTO consultations (id, access_token, department) VALUES ($1::uuid, $2, $3)
         """,
         row_id,
+        access_token,
         department,
     )
-    return row_id
+    return row_id, access_token
+
+
+async def verify_consultation_access(
+    conn: Connection,
+    consultation_id: str,
+    access_token: str,
+) -> bool:
+    """Return True only when the opaque access token matches the session."""
+    if not access_token:
+        return False
+    row = await conn.fetchrow(
+        """
+        SELECT 1
+        FROM consultations
+        WHERE id = $1::uuid AND access_token = $2
+        """,
+        consultation_id,
+        access_token,
+    )
+    return row is not None
 
 
 async def get_consultation(conn: Connection, consultation_id: str) -> dict | None:
@@ -33,7 +56,7 @@ async def get_consultation(conn: Connection, consultation_id: str) -> dict | Non
                is_submitted, summary, proposal, messages,
                user_name, user_email, admin_status, created_at
         FROM consultations
-        WHERE id = $1
+        WHERE id = $1::uuid
         """,
         consultation_id,
     )
@@ -77,7 +100,7 @@ async def append_message(
         encrypted_str = encrypt_messages(messages)
         # Store as a JSONB string value: json.dumps wraps in double-quotes.
         await conn.execute(
-            "UPDATE consultations SET messages = $1::jsonb WHERE id = $2",
+            "UPDATE consultations SET messages = $1::jsonb WHERE id = $2::uuid",
             json.dumps(encrypted_str),
             consultation_id,
         )
@@ -87,7 +110,7 @@ async def append_message(
             """
             UPDATE consultations
             SET messages = messages || $1::jsonb
-            WHERE id = $2
+            WHERE id = $2::uuid
             """,
             f"[{json.dumps(msg)}]",
             consultation_id,
@@ -97,22 +120,36 @@ async def append_message(
 async def update_metadata(
     conn: Connection,
     consultation_id: str,
-    department: str | None,
     category: str | None,
     severity: int,
 ) -> None:
-    """Overwrite extracted metadata fields (department, category, severity)."""
+    """Overwrite extracted metadata fields managed by LLM analysis."""
     await conn.execute(
         """
         UPDATE consultations
-        SET department = COALESCE($1, department),
-            category   = COALESCE($2, category),
-            severity   = $3
-        WHERE id = $4
+        SET category = COALESCE($1, category),
+            severity = $2
+        WHERE id = $3::uuid
         """,
-        department,
         category,
         severity,
+        consultation_id,
+    )
+
+
+async def set_consultation_department(
+    conn: Connection,
+    consultation_id: str,
+    department: str | None,
+) -> None:
+    """Set the user-selected department exactly, including clearing to NULL."""
+    await conn.execute(
+        """
+        UPDATE consultations
+        SET department = $1
+        WHERE id = $2::uuid
+        """,
+        department,
         consultation_id,
     )
 
@@ -140,7 +177,7 @@ async def submit_consultation(
             user_email   = $4,
             is_submitted = TRUE,
             admin_status = 'New'
-        WHERE id = $5
+        WHERE id = $5::uuid
           AND is_submitted = FALSE
         """,
         summary,
@@ -162,7 +199,7 @@ async def update_feedback(
         """
         UPDATE consultations
         SET feedback = $1
-        WHERE id = $2
+        WHERE id = $2::uuid
         """,
         value,
         consultation_id,

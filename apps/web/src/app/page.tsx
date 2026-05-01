@@ -7,6 +7,7 @@ type SourceRef = {
   title: string;
   primary_page?: number | null;
   supplementary_pages?: number[];
+  sections?: string[];
 };
 
 type Message = {
@@ -39,6 +40,7 @@ type Department = {
 type DraftLanguage = "auto" | "ja" | "en";
 
 const STORAGE_KEY = "oiagent:consultation_id";
+const ACCESS_TOKEN_STORAGE_KEY = "oiagent:consultation_access_token";
 
 const MODE_LABELS: Record<ResponseMode, string> = {
   personal: "Personal Advice",
@@ -65,6 +67,7 @@ export default function Home() {
     [],
   );
   const [consultationId, setConsultationId] = useState<string>("");
+  const [consultationAccessToken, setConsultationAccessToken] = useState<string>("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>("");
   const [mode, setMode] = useState<ResponseMode>("personal");
@@ -80,6 +83,7 @@ export default function Home() {
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [draftLanguage, setDraftLanguage] = useState<DraftLanguage>("auto");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isCreatingDraft = submitting && !submitDraft;
 
   const canCreateDraft =
     messages.length > 0 &&
@@ -101,8 +105,10 @@ export default function Home() {
     })();
 
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) return;
-    void loadSession(saved);
+    const savedToken = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
+    if (!saved || !savedToken) return;
+    setConsultationAccessToken(savedToken);
+    void loadSession(saved, savedToken);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -122,15 +128,24 @@ export default function Home() {
     if (!response.ok) {
       throw new Error(`Failed to create session (${response.status})`);
     }
-    const data = (await response.json()) as { consultation_id: string };
+    const data = (await response.json()) as {
+      consultation_id: string;
+      access_token: string;
+    };
+    setConsultationAccessToken(data.access_token);
+    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, data.access_token);
     return data.consultation_id;
   }
 
-  async function loadSession(id: string): Promise<void> {
-    const response = await fetch(`${apiBase}/consultations/${id}`);
+  async function loadSession(id: string, accessToken: string): Promise<void> {
+    const response = await fetch(`${apiBase}/consultations/${id}`, {
+      headers: { "X-Consultation-Token": accessToken },
+    });
     if (!response.ok) {
       window.localStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
       setConsultationId("");
+      setConsultationAccessToken("");
       setMessages([]);
       return;
     }
@@ -141,6 +156,7 @@ export default function Home() {
     setDepartment(data.department ?? "");
     setIsSubmitted(data.is_submitted ?? false);
     window.localStorage.setItem(STORAGE_KEY, data.id);
+    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, accessToken);
   }
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
@@ -157,15 +173,20 @@ export default function Home() {
 
     try {
       let sessionId = consultationId;
+      let accessToken = consultationAccessToken;
       if (!sessionId) {
         sessionId = await createSession();
+        accessToken = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY) ?? "";
         setConsultationId(sessionId);
         window.localStorage.setItem(STORAGE_KEY, sessionId);
       }
 
       const response = await fetch(`${apiBase}/consultations/${sessionId}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Consultation-Token": accessToken,
+        },
         body: JSON.stringify({ content, mode }),
       });
       if (!response.ok) {
@@ -218,7 +239,10 @@ export default function Home() {
         `${apiBase}/consultations/${consultationId}/feedback`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-Consultation-Token": consultationAccessToken,
+          },
           body: JSON.stringify({ value }),
         },
       );
@@ -236,14 +260,19 @@ export default function Home() {
     setSubmitting(true);
     try {
       let sessionId = consultationId;
+      let accessToken = consultationAccessToken;
       if (!sessionId) {
         sessionId = await createSession();
+        accessToken = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY) ?? "";
         setConsultationId(sessionId);
         window.localStorage.setItem(STORAGE_KEY, sessionId);
       }
       const response = await fetch(`${apiBase}/consultations/${sessionId}/draft`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Consultation-Token": accessToken,
+        },
         body: JSON.stringify({ language: draftLanguage }),
       });
       if (!response.ok) {
@@ -275,7 +304,10 @@ export default function Home() {
         `${apiBase}/consultations/${consultationId}/submit`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-Consultation-Token": consultationAccessToken,
+          },
           body: JSON.stringify({
             summary: submitDraft.summary,
             proposal: submitDraft.proposal,
@@ -308,7 +340,10 @@ export default function Home() {
     try {
       await fetch(`${apiBase}/consultations/${consultationId}/department`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Consultation-Token": consultationAccessToken,
+        },
         body: JSON.stringify({ department: value || null }),
       });
     } catch {
@@ -318,6 +353,7 @@ export default function Home() {
 
   function resetSession() {
     setConsultationId("");
+    setConsultationAccessToken("");
     setMessages([]);
     setFeedback(0);
     setError("");
@@ -327,6 +363,7 @@ export default function Home() {
     setSubmitName("");
     setSubmitEmail("");
     window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
   }
 
   return (
@@ -375,9 +412,32 @@ export default function Home() {
               type="button"
               onClick={() => void requestSubmit()}
               disabled={!canCreateDraft}
-              className="shrink-0 rounded border border-amber-500/50 bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-200 transition-colors hover:border-amber-400 hover:bg-amber-900/50 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex shrink-0 items-center gap-2 rounded border border-amber-500/50 bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-200 transition-colors hover:border-amber-400 hover:bg-amber-900/50 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {submitting ? "Creating…" : "Create proposal draft"}
+              {isCreatingDraft && (
+                <svg
+                  className="h-3.5 w-3.5 animate-spin"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                  />
+                </svg>
+              )}
+              {isCreatingDraft ? "Creating…" : "Create proposal draft"}
             </button>
             <div className="flex min-w-0 items-center gap-2">
               <label htmlFor="draft-lang" className="shrink-0 text-xs text-gray-400">
@@ -585,8 +645,37 @@ export default function Home() {
         >
           {!submitDraft ? (
             <div className="flex flex-1 items-center justify-center p-6 text-center text-sm leading-relaxed text-gray-400">
-              When you are ready to report to your manager, select the &quot;Create proposal
-              draft&quot; button.
+              {isCreatingDraft ? (
+                <div className="flex flex-col items-center gap-3">
+                  <svg
+                    className="h-6 w-6 animate-spin text-amber-300"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                    />
+                  </svg>
+                  <span>Creating your proposal draft…</span>
+                </div>
+              ) : (
+                <>
+                  When you are ready to report to your manager, select the &quot;Create
+                  proposal draft&quot; button.
+                </>
+              )}
             </div>
           ) : (
             <>
