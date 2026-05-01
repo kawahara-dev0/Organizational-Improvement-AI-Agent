@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.ai.enums import ModelProvider
+from app.ai.schemas import InvokeResponse
 from app.db.session import get_conn as real_get_conn
 from main import _check_production_secrets, app
 
@@ -107,7 +109,6 @@ async def test_chat_rate_limit_returns_429_when_exceeded(db_conn) -> None:
     during the requests.
     """
     from app.consultations.repository import create_consultation
-    from app.db.session import get_conn as real_get_conn
 
     cid, token = await create_consultation(db_conn)
 
@@ -116,7 +117,17 @@ async def test_chat_rate_limit_returns_429_when_exceeded(db_conn) -> None:
 
     app.dependency_overrides[real_get_conn] = _override
     try:
-        with patch("app.routers.consultations.settings.chat_rate_limit", "1/minute"):
+        rag_stub = InvokeResponse(
+            content="rate-limit test reply",
+            provider_used=ModelProvider.GEMINI,
+        )
+        with (
+            patch("app.routers.consultations.settings.chat_rate_limit", "1/minute"),
+            patch(
+                "app.routers.consultations.invoke_rag",
+                new=AsyncMock(return_value=rag_stub),
+            ),
+        ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
