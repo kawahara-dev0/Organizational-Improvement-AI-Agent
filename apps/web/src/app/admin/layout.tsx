@@ -47,10 +47,10 @@ export default function AdminLayout({
   }
 
   return (
-    <div className="flex min-h-screen bg-zinc-950 text-white">
-      {/* Sidebar */}
-      <aside className="flex w-52 flex-col border-r border-zinc-800 bg-zinc-900">
-        <div className="px-5 py-5">
+    <div className="flex h-dvh min-h-0 overflow-hidden bg-zinc-950 text-white">
+      {/* Sidebar — viewport-height shell so Log out stays pinned; main scrolls alone */}
+      <aside className="flex h-full min-h-0 w-52 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900">
+        <div className="shrink-0 px-5 py-5">
           <span className="text-xs font-semibold uppercase tracking-widest text-zinc-400">
             OIAgent
           </span>
@@ -59,7 +59,7 @@ export default function AdminLayout({
           </p>
         </div>
 
-        <nav className="flex-1 space-y-0.5 px-2 pb-4">
+        <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-4">
           {NAV_ITEMS.map(({ href, label }) => {
             const active = pathname.startsWith(href);
             return (
@@ -78,7 +78,7 @@ export default function AdminLayout({
           })}
         </nav>
 
-        <div className="border-t border-zinc-800 p-4">
+        <div className="shrink-0 border-t border-zinc-800 p-4">
           <button
             onClick={handleLogout}
             className="w-full rounded px-3 py-2 text-left text-sm text-zinc-400 transition hover:bg-zinc-800 hover:text-white"
@@ -89,7 +89,7 @@ export default function AdminLayout({
       </aside>
 
       {/* Main content */}
-      <main className="flex flex-1 flex-col overflow-auto">{children}</main>
+      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</main>
     </div>
   );
 }

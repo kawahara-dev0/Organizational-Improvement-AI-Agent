@@ -405,7 +405,7 @@ export default function TrendsPage() {
               AI Management Brief
             </h2>
             <p className="text-xs text-zinc-500">
-              Gemini-generated bullet summary of current consultation trends.
+              AI-generated bullet summary of current consultation trends.
             </p>
           </div>
           <div className="flex items-center gap-2">

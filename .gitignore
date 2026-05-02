@@ -35,5 +35,5 @@ Thumbs.db
 *.key
 secrets/
 
-# ---- Local samples / test fixtures ----
-sample/
+# ---- Local scratch / temp files ----
+temp/
